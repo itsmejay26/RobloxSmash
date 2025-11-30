@@ -3,14 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Roblox Profile Spawner</title>
+    <title>Roblox Profile Spawner - Combat System</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <div class="app-container">
         <!-- Header / Input Section -->
         <header class="input-section">
-            <h1>Roblox Profile Spawner</h1>
+            <h1>Roblox Dummy Arena</h1>
             <div class="input-wrapper">
                 <input 
                     type="text" 
@@ -18,15 +18,34 @@
                     placeholder="Enter Roblox username..."
                     autocomplete="off"
                 >
-                <button id="add-profile-btn">Add Profile</button>
+                <button id="add-profile-btn">Add Dummy</button>
             </div>
             <p id="status-message" class="status-message"></p>
         </header>
 
+        <!-- Tools Section -->
+        <section class="tools-section">
+            <h2 class="tools-title">⚔️ Combat Tools</h2>
+            <div class="tools-container" id="tools-container">
+                <!-- Tools will be rendered here -->
+            </div>
+            <div class="tool-info">
+                <span id="current-tool-name">No tool selected</span>
+                <span id="current-tool-damage"></span>
+            </div>
+        </section>
+
         <!-- Stats Bar -->
         <div class="stats-bar">
-            <span id="profile-count">Profiles Loaded: 0</span>
-            <button id="clear-all-btn" class="clear-btn">Clear All</button>
+            <div class="stats-left">
+                <span id="profile-count">Dummies: 0</span>
+                <span id="destroyed-count">Destroyed: 0</span>
+                <span id="total-damage">Total Damage: 0</span>
+            </div>
+            <div class="stats-right">
+                <button id="respawn-all-btn" class="action-btn respawn-btn">Respawn All</button>
+                <button id="clear-all-btn" class="action-btn clear-btn">Clear All</button>
+            </div>
         </div>
 
         <!-- Profile Grid Container -->
@@ -34,6 +53,14 @@
             <!-- Profiles will be spawned here -->
         </main>
     </div>
+
+    <!-- Sound Toggle -->
+    <button id="sound-toggle" class="sound-toggle" title="Toggle Sound">
+        🔊
+    </button>
+
+    <!-- Particle Canvas (for global effects) -->
+    <canvas id="particle-canvas"></canvas>
 
     <script type="module" src="script.js"></script>
 </body>

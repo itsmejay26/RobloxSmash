@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Roblox Profile Spawner</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header / Input Section -->
+        <header class="input-section">
+            <h1>Roblox Profile Spawner</h1>
+            <div class="input-wrapper">
+                <input 
+                    type="text" 
+                    id="username-input" 
+                    placeholder="Enter Roblox username..."
+                    autocomplete="off"
+                >
+                <button id="add-profile-btn">Add Profile</button>
+            </div>
+            <p id="status-message" class="status-message"></p>
+        </header>
+
+        <!-- Stats Bar -->
+        <div class="stats-bar">
+            <span id="profile-count">Profiles Loaded: 0</span>
+            <button id="clear-all-btn" class="clear-btn">Clear All</button>
+        </div>
+
+        <!-- Profile Grid Container -->
+        <main id="profiles-container" class="profiles-container">
+            <!-- Profiles will be spawned here -->
+        </main>
+    </div>
+
+    <script type="module" src="script.js"></script>
+</body>
+</html>

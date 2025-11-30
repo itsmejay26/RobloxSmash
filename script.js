@@ -1,659 +1,973 @@
-/**
- * ========================================
- * Roblox Profile Spawner Module
- * ========================================
- * A modular system for fetching and displaying
- * Roblox profiles as "dummy targets"
- * ========================================
- */
+/* ========================================
+   CSS Variables & Reset
+======================================== */
+:root {
+    --bg-primary: #1a1a2e;
+    --bg-secondary: #16213e;
+    --bg-card: #0f3460;
+    --bg-card-hover: #1a4a7a;
+    --accent-primary: #e94560;
+    --accent-secondary: #00d9ff;
+    --accent-warning: #f59e0b;
+    --accent-success: #4ade80;
+    --text-primary: #ffffff;
+    --text-secondary: #a0a0a0;
+    --health-high: #4ade80;
+    --health-mid: #f59e0b;
+    --health-low: #ef4444;
+    --health-bg: #1f2937;
+    --shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+    --shadow-glow: 0 0 30px rgba(233, 69, 96, 0.5);
+    --radius: 12px;
+    --transition: all 0.3s ease;
+}
 
-// ========================================
-// Configuration
-// ========================================
-const CONFIG = {
-    // Set to true to use a CORS proxy (required for browser)
-    useCorsProxy: true,
-    corsProxyUrl: 'https://corsproxy.io/?',
-    
-    // Roblox API Endpoints
-    endpoints: {
-        usernames: 'https://users.roblox.com/v1/usernames/users',
-        userInfo: 'https://users.roblox.com/v1/users/',
-        avatar: 'https://thumbnails.roblox.com/v1/users/avatar'
-    },
-    
-    // Avatar settings
-    avatarSize: '420x420',
-    avatarFormat: 'Png',
-    
-    // Default values
-    defaultHealth: 100,
-    maxHealth: 100
-};
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
 
-// ========================================
-// Profile Store (State Management)
-// ========================================
-const ProfileStore = {
-    profiles: [],
-    nextLocalId: 1,
-    
-    /**
-     * Add a profile to the store
-     * @param {Object} profileData - Profile data from API
-     * @returns {Object} - Complete profile object
-     */
-    add(profileData) {
-        const profile = {
-            localId: this.nextLocalId++,
-            id: profileData.id,
-            name: profileData.name,
-            displayName: profileData.displayName,
-            avatarUrl: profileData.avatarUrl,
-            health: CONFIG.defaultHealth,
-            maxHealth: CONFIG.maxHealth,
-            createdAt: Date.now()
-        };
-        
-        this.profiles.push(profile);
-        this.saveToStorage();
-        return profile;
-    },
-    
-    /**
-     * Remove a profile by local ID
-     * @param {number} localId - Local profile ID
-     * @returns {boolean} - Success status
-     */
-    remove(localId) {
-        const index = this.profiles.findIndex(p => p.localId === localId);
-        if (index !== -1) {
-            this.profiles.splice(index, 1);
-            this.saveToStorage();
-            return true;
-        }
-        return false;
-    },
-    
-    /**
-     * Get profile by local ID
-     * @param {number} localId - Local profile ID
-     * @returns {Object|null} - Profile or null
-     */
-    get(localId) {
-        return this.profiles.find(p => p.localId === localId) || null;
-    },
-    
-    /**
-     * Get all profiles
-     * @returns {Array} - All profiles
-     */
-    getAll() {
-        return [...this.profiles];
-    },
-    
-    /**
-     * Get profile count
-     * @returns {number} - Number of profiles
-     */
-    count() {
-        return this.profiles.length;
-    },
-    
-    /**
-     * Clear all profiles
-     */
-    clear() {
-        this.profiles = [];
-        this.saveToStorage();
-    },
-    
-    /**
-     * Update profile health
-     * @param {number} localId - Local profile ID
-     * @param {number} health - New health value
-     */
-    updateHealth(localId, health) {
-        const profile = this.get(localId);
-        if (profile) {
-            profile.health = Math.max(0, Math.min(health, profile.maxHealth));
-            this.saveToStorage();
-        }
-    },
-    
-    /**
-     * Check if username already exists
-     * @param {string} username - Username to check
-     * @returns {boolean}
-     */
-    hasUsername(username) {
-        return this.profiles.some(
-            p => p.name.toLowerCase() === username.toLowerCase()
-        );
-    },
-    
-    /**
-     * Save profiles to localStorage
-     */
-    saveToStorage() {
-        try {
-            localStorage.setItem('roblox_profiles', JSON.stringify(this.profiles));
-            localStorage.setItem('roblox_nextId', this.nextLocalId.toString());
-        } catch (e) {
-            console.warn('Could not save to localStorage:', e);
-        }
-    },
-    
-    /**
-     * Load profiles from localStorage
-     */
-    loadFromStorage() {
-        try {
-            const stored = localStorage.getItem('roblox_profiles');
-            const nextId = localStorage.getItem('roblox_nextId');
-            
-            if (stored) {
-                this.profiles = JSON.parse(stored);
-            }
-            if (nextId) {
-                this.nextLocalId = parseInt(nextId, 10);
-            }
-        } catch (e) {
-            console.warn('Could not load from localStorage:', e);
-        }
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-secondary) 100%);
+    min-height: 100vh;
+    color: var(--text-primary);
+    overflow-x: hidden;
+}
+
+/* ========================================
+   Particle Canvas
+======================================== */
+#particle-canvas {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 1000;
+}
+
+/* ========================================
+   Sound Toggle
+======================================== */
+.sound-toggle {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    width: 50px;
+    height: 50px;
+    border-radius: 50%;
+    border: none;
+    background: var(--bg-card);
+    color: var(--text-primary);
+    font-size: 1.5rem;
+    cursor: pointer;
+    z-index: 100;
+    transition: var(--transition);
+    box-shadow: var(--shadow);
+}
+
+.sound-toggle:hover {
+    background: var(--bg-card-hover);
+    transform: scale(1.1);
+}
+
+.sound-toggle.muted {
+    opacity: 0.5;
+}
+
+/* ========================================
+   App Container
+======================================== */
+.app-container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 20px;
+    position: relative;
+    z-index: 1;
+}
+
+/* ========================================
+   Input Section
+======================================== */
+.input-section {
+    text-align: center;
+    padding: 30px 20px;
+    background: var(--bg-secondary);
+    border-radius: var(--radius);
+    margin-bottom: 20px;
+    box-shadow: var(--shadow);
+}
+
+.input-section h1 {
+    font-size: 2.2rem;
+    margin-bottom: 25px;
+    background: linear-gradient(90deg, var(--accent-primary), var(--accent-secondary));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+.input-wrapper {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+#username-input {
+    padding: 15px 25px;
+    font-size: 1rem;
+    border: 2px solid var(--bg-card);
+    border-radius: var(--radius);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    width: 320px;
+    max-width: 100%;
+    transition: var(--transition);
+}
+
+#username-input:focus {
+    outline: none;
+    border-color: var(--accent-secondary);
+    box-shadow: 0 0 15px rgba(0, 217, 255, 0.3);
+}
+
+#username-input::placeholder {
+    color: var(--text-secondary);
+}
+
+#add-profile-btn {
+    padding: 15px 30px;
+    font-size: 1rem;
+    font-weight: 600;
+    border: none;
+    border-radius: var(--radius);
+    background: linear-gradient(135deg, var(--accent-primary), #ff6b6b);
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+#add-profile-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 5px 20px rgba(233, 69, 96, 0.4);
+}
+
+#add-profile-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.status-message {
+    margin-top: 15px;
+    font-size: 0.9rem;
+    min-height: 22px;
+}
+
+.status-message.error { color: var(--accent-primary); }
+.status-message.success { color: var(--accent-success); }
+.status-message.loading { color: var(--accent-secondary); }
+
+/* ========================================
+   Tools Section
+======================================== */
+.tools-section {
+    background: var(--bg-secondary);
+    border-radius: var(--radius);
+    padding: 20px;
+    margin-bottom: 20px;
+    box-shadow: var(--shadow);
+}
+
+.tools-title {
+    font-size: 1.2rem;
+    margin-bottom: 15px;
+    color: var(--text-secondary);
+    text-align: center;
+}
+
+.tools-container {
+    display: flex;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 15px;
+}
+
+.tool-btn {
+    padding: 12px 24px;
+    font-size: 0.95rem;
+    font-weight: 600;
+    border: 2px solid transparent;
+    border-radius: var(--radius);
+    background: var(--bg-card);
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: var(--transition);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.tool-btn:hover {
+    background: var(--bg-card-hover);
+    transform: translateY(-2px);
+}
+
+.tool-btn.selected {
+    border-color: var(--accent-secondary);
+    background: rgba(0, 217, 255, 0.15);
+    box-shadow: 0 0 15px rgba(0, 217, 255, 0.3);
+}
+
+.tool-btn .tool-icon {
+    font-size: 1.3rem;
+}
+
+.tool-btn .tool-damage {
+    font-size: 0.8rem;
+    padding: 2px 8px;
+    background: var(--accent-primary);
+    border-radius: 10px;
+}
+
+.tool-info {
+    text-align: center;
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+}
+
+#current-tool-damage {
+    margin-left: 10px;
+    color: var(--accent-primary);
+    font-weight: 600;
+}
+
+/* ========================================
+   Stats Bar
+======================================== */
+.stats-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 15px 20px;
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+    gap: 15px;
+}
+
+.stats-left {
+    display: flex;
+    gap: 25px;
+    flex-wrap: wrap;
+}
+
+.stats-left span {
+    font-size: 0.95rem;
+    color: var(--text-secondary);
+}
+
+.stats-right {
+    display: flex;
+    gap: 10px;
+}
+
+.action-btn {
+    padding: 10px 18px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    border: 2px solid;
+    border-radius: var(--radius);
+    background: transparent;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.respawn-btn {
+    border-color: var(--accent-success);
+    color: var(--accent-success);
+}
+
+.respawn-btn:hover {
+    background: var(--accent-success);
+    color: var(--bg-primary);
+}
+
+.clear-btn {
+    border-color: var(--accent-primary);
+    color: var(--accent-primary);
+}
+
+.clear-btn:hover {
+    background: var(--accent-primary);
+    color: var(--text-primary);
+}
+
+/* ========================================
+   Profiles Container
+======================================== */
+.profiles-container {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 25px;
+    padding: 10px;
+}
+
+/* ========================================
+   Profile Card (Dummy Target)
+======================================== */
+.profile-card {
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    padding: 20px;
+    text-align: center;
+    box-shadow: var(--shadow);
+    transition: var(--transition);
+    position: relative;
+    overflow: visible;
+    animation: spawn-in 0.4s ease-out;
+    cursor: crosshair;
+    user-select: none;
+}
+
+@keyframes spawn-in {
+    from {
+        opacity: 0;
+        transform: scale(0.8) translateY(20px);
     }
-};
-
-// ========================================
-// Roblox API Service
-// ========================================
-const RobloxAPI = {
-    /**
-     * Build URL with optional CORS proxy
-     * @param {string} url - Original URL
-     * @returns {string} - Processed URL
-     */
-    buildUrl(url) {
-        if (CONFIG.useCorsProxy) {
-            return CONFIG.corsProxyUrl + encodeURIComponent(url);
-        }
-        return url;
-    },
-    
-    /**
-     * Get User ID from username
-     * @param {string} username - Roblox username
-     * @returns {Promise<number|null>} - User ID or null
-     */
-    async getUserId(username) {
-        const url = this.buildUrl(CONFIG.endpoints.usernames);
-        
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                usernames: [username],
-                excludeBannedUsers: false
-            })
-        });
-        
-        if (!response.ok) {
-            throw new Error(`Failed to fetch user ID: ${response.status}`);
-        }
-        
-        const data = await response.json();
-        
-        if (data.data && data.data.length > 0) {
-            return data.data[0].id;
-        }
-        
-        return null;
-    },
-    
-    /**
-     * Get user profile info
-     * @param {number} userId - Roblox user ID
-     * @returns {Promise<Object>} - User profile data
-     */
-    async getUserInfo(userId) {
-        const url = this.buildUrl(`${CONFIG.endpoints.userInfo}${userId}`);
-        
-        const response = await fetch(url);
-        
-        if (!response.ok) {
-            throw new Error(`Failed to fetch user info: ${response.status}`);
-        }
-        
-        return response.json();
-    },
-    
-    /**
-     * Get user avatar URL
-     * @param {number} userId - Roblox user ID
-     * @returns {Promise<string|null>} - Avatar URL or null
-     */
-    async getAvatarUrl(userId) {
-        const params = new URLSearchParams({
-            userIds: userId,
-            size: CONFIG.avatarSize,
-            format: CONFIG.avatarFormat
-        });
-        
-        const url = this.buildUrl(`${CONFIG.endpoints.avatar}?${params}`);
-        
-        const response = await fetch(url);
-        
-        if (!response.ok) {
-            throw new Error(`Failed to fetch avatar: ${response.status}`);
-        }
-        
-        const data = await response.json();
-        
-        if (data.data && data.data.length > 0) {
-            return data.data[0].imageUrl;
-        }
-        
-        return null;
-    },
-    
-    /**
-     * Fetch complete profile data
-     * @param {string} username - Roblox username
-     * @returns {Promise<Object>} - Complete profile data
-     */
-    async fetchProfile(username) {
-        // Step 1: Get User ID
-        const userId = await this.getUserId(username);
-        
-        if (!userId) {
-            throw new Error(`User "${username}" not found`);
-        }
-        
-        // Step 2: Get User Info and Avatar in parallel
-        const [userInfo, avatarUrl] = await Promise.all([
-            this.getUserInfo(userId),
-            this.getAvatarUrl(userId)
-        ]);
-        
-        return {
-            id: userInfo.id,
-            name: userInfo.name,
-            displayName: userInfo.displayName,
-            description: userInfo.description,
-            avatarUrl: avatarUrl,
-            created: userInfo.created,
-            isBanned: userInfo.isBanned
-        };
+    to {
+        opacity: 1;
+        transform: scale(1) translateY(0);
     }
-};
+}
 
-// ========================================
-// UI Renderer
-// ========================================
-const UIRenderer = {
-    elements: {},
-    
-    /**
-     * Initialize DOM element references
-     */
-    init() {
-        this.elements = {
-            input: document.getElementById('username-input'),
-            addBtn: document.getElementById('add-profile-btn'),
-            status: document.getElementById('status-message'),
-            container: document.getElementById('profiles-container'),
-            count: document.getElementById('profile-count'),
-            clearBtn: document.getElementById('clear-all-btn')
-        };
-    },
-    
-    /**
-     * Set status message
-     * @param {string} message - Message text
-     * @param {string} type - Message type (error, success, loading)
-     */
-    setStatus(message, type = '') {
-        this.elements.status.textContent = message;
-        this.elements.status.className = `status-message ${type}`;
-    },
-    
-    /**
-     * Update profile count display
-     */
-    updateCount() {
-        this.elements.count.textContent = `Profiles Loaded: ${ProfileStore.count()}`;
-    },
-    
-    /**
-     * Set loading state
-     * @param {boolean} isLoading - Loading state
-     */
-    setLoading(isLoading) {
-        this.elements.addBtn.disabled = isLoading;
-        this.elements.input.disabled = isLoading;
-        
-        if (isLoading) {
-            this.elements.addBtn.innerHTML = '<span class="loading-spinner"></span>';
-        } else {
-            this.elements.addBtn.textContent = 'Add Profile';
-        }
-    },
-    
-    /**
-     * Create profile card HTML
-     * @param {Object} profile - Profile data
-     * @returns {string} - HTML string
-     */
-    createProfileCard(profile) {
-        const healthPercent = (profile.health / profile.maxHealth) * 100;
-        
-        return `
-            <article class="profile-card" id="profile-${profile.localId}" data-local-id="${profile.localId}">
-                <button class="remove-btn" aria-label="Remove profile">&times;</button>
-                <span class="profile-id-badge">#${profile.id}</span>
-                
-                <div class="avatar-wrapper">
-                    ${profile.avatarUrl 
-                        ? `<img class="avatar-image" src="${profile.avatarUrl}" alt="${profile.displayName}'s avatar" loading="lazy">`
-                        : `<div class="avatar-placeholder">?</div>`
-                    }
-                </div>
-                
-                <div class="profile-info">
-                    <h2 class="display-name">${this.escapeHtml(profile.displayName)}</h2>
-                    <p class="username">@${this.escapeHtml(profile.name)}</p>
-                </div>
-                
-                <div class="health-section">
-                    <div class="health-label">
-                        <span>Health</span>
-                        <span class="health-value">${profile.health}/${profile.maxHealth}</span>
-                    </div>
-                    <div class="health-bar-container">
-                        <div class="health-bar-fill" style="width: ${healthPercent}%"></div>
-                    </div>
-                </div>
-            </article>
-        `;
-    },
-    
-    /**
-     * Create empty state HTML
-     * @returns {string} - HTML string
-     */
-    createEmptyState() {
-        return `
-            <div class="empty-state">
-                <div class="empty-state-icon">👤</div>
-                <p class="empty-state-text">No profiles added yet.<br>Enter a Roblox username above to get started!</p>
-            </div>
-        `;
-    },
-    
-    /**
-     * Spawn a profile card into the container
-     * @param {Object} profile - Profile data
-     */
-    spawnProfile(profile) {
-        // Remove empty state if present
-        const emptyState = this.elements.container.querySelector('.empty-state');
-        if (emptyState) {
-            emptyState.remove();
-        }
-        
-        // Create and insert profile card
-        const cardHtml = this.createProfileCard(profile);
-        this.elements.container.insertAdjacentHTML('beforeend', cardHtml);
-        
-        // Add remove button listener
-        const card = document.getElementById(`profile-${profile.localId}`);
-        const removeBtn = card.querySelector('.remove-btn');
-        removeBtn.addEventListener('click', () => this.handleRemove(profile.localId));
-        
-        this.updateCount();
-    },
-    
-    /**
-     * Remove a profile card from the DOM
-     * @param {number} localId - Local profile ID
-     */
-    handleRemove(localId) {
-        const card = document.getElementById(`profile-${localId}`);
-        if (card) {
-            card.style.animation = 'spawn-in 0.3s ease-out reverse';
-            setTimeout(() => {
-                card.remove();
-                ProfileStore.remove(localId);
-                this.updateCount();
-                
-                // Show empty state if no profiles
-                if (ProfileStore.count() === 0) {
-                    this.elements.container.innerHTML = this.createEmptyState();
-                }
-            }, 280);
-        }
-    },
-    
-    /**
-     * Render all profiles from store
-     */
-    renderAll() {
-        const profiles = ProfileStore.getAll();
-        
-        if (profiles.length === 0) {
-            this.elements.container.innerHTML = this.createEmptyState();
-        } else {
-            this.elements.container.innerHTML = profiles
-                .map(p => this.createProfileCard(p))
-                .join('');
-            
-            // Add event listeners to remove buttons
-            profiles.forEach(profile => {
-                const card = document.getElementById(`profile-${profile.localId}`);
-                const removeBtn = card.querySelector('.remove-btn');
-                removeBtn.addEventListener('click', () => this.handleRemove(profile.localId));
-            });
-        }
-        
-        this.updateCount();
-    },
-    
-    /**
-     * Clear all profiles from display
-     */
-    clearAll() {
-        ProfileStore.clear();
-        this.elements.container.innerHTML = this.createEmptyState();
-        this.updateCount();
-        this.setStatus('All profiles cleared', 'success');
-    },
-    
-    /**
-     * Update health bar display
-     * @param {number} localId - Local profile ID
-     * @param {number} health - New health value
-     * @param {number} maxHealth - Max health value
-     */
-    updateHealthBar(localId, health, maxHealth) {
-        const card = document.getElementById(`profile-${localId}`);
-        if (card) {
-            const healthFill = card.querySelector('.health-bar-fill');
-            const healthValue = card.querySelector('.health-value');
-            const percent = (health / maxHealth) * 100;
-            
-            healthFill.style.width = `${percent}%`;
-            healthValue.textContent = `${health}/${maxHealth}`;
-            
-            // Change color based on health
-            if (percent <= 25) {
-                healthFill.style.background = 'linear-gradient(90deg, #ef4444, #dc2626)';
-            } else if (percent <= 50) {
-                healthFill.style.background = 'linear-gradient(90deg, #f59e0b, #d97706)';
-            } else {
-                healthFill.style.background = 'linear-gradient(90deg, #4ade80, #22c55e)';
-            }
-        }
-    },
-    
-    /**
-     * Escape HTML to prevent XSS
-     * @param {string} str - String to escape
-     * @returns {string} - Escaped string
-     */
-    escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str;
-        return div.innerHTML;
+.profile-card:hover {
+    transform: translateY(-3px);
+}
+
+.profile-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 4px;
+    background: linear-gradient(90deg, var(--accent-primary), var(--accent-secondary));
+    transition: var(--transition);
+}
+
+.profile-card.destroyed {
+    cursor: default;
+}
+
+.profile-card.destroyed::before {
+    background: var(--text-secondary);
+}
+
+/* Hit Flash Effect */
+.profile-card.hit-flash {
+    animation: hit-flash 0.15s ease-out;
+}
+
+@keyframes hit-flash {
+    0%, 100% { 
+        box-shadow: var(--shadow);
     }
-};
-
-// ========================================
-// Profile Spawner Controller
-// ========================================
-const ProfileSpawner = {
-    /**
-     * Initialize the spawner
-     */
-    init() {
-        UIRenderer.init();
-        ProfileStore.loadFromStorage();
-        UIRenderer.renderAll();
-        this.bindEvents();
-        
-        console.log('🎮 Roblox Profile Spawner initialized');
-    },
-    
-    /**
-     * Bind event listeners
-     */
-    bindEvents() {
-        // Add profile button
-        UIRenderer.elements.addBtn.addEventListener('click', () => this.addProfile());
-        
-        // Enter key in input
-        UIRenderer.elements.input.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                this.addProfile();
-            }
-        });
-        
-        // Clear all button
-        UIRenderer.elements.clearBtn.addEventListener('click', () => {
-            if (confirm('Are you sure you want to remove all profiles?')) {
-                UIRenderer.clearAll();
-            }
-        });
-    },
-    
-    /**
-     * Add a new profile
-     */
-    async addProfile() {
-        const username = UIRenderer.elements.input.value.trim();
-        
-        // Validation
-        if (!username) {
-            UIRenderer.setStatus('Please enter a username', 'error');
-            return;
-        }
-        
-        if (ProfileStore.hasUsername(username)) {
-            UIRenderer.setStatus(`"${username}" is already added`, 'error');
-            return;
-        }
-        
-        // Fetch and spawn
-        UIRenderer.setLoading(true);
-        UIRenderer.setStatus('Fetching profile...', 'loading');
-        
-        try {
-            const profileData = await RobloxAPI.fetchProfile(username);
-            const profile = ProfileStore.add(profileData);
-            UIRenderer.spawnProfile(profile);
-            UIRenderer.setStatus(`Added ${profileData.displayName}!`, 'success');
-            UIRenderer.elements.input.value = '';
-            
-        } catch (error) {
-            console.error('Failed to add profile:', error);
-            UIRenderer.setStatus(error.message || 'Failed to fetch profile', 'error');
-        } finally {
-            UIRenderer.setLoading(false);
-            UIRenderer.elements.input.focus();
-        }
+    50% { 
+        box-shadow: 0 0 30px rgba(255, 0, 0, 0.6), inset 0 0 30px rgba(255, 0, 0, 0.3);
     }
-};
+}
 
-// ========================================
-// Public API (for external modules)
-// ========================================
-export const RobloxProfileAPI = {
-    /**
-     * Get all profiles
-     */
-    getProfiles: () => ProfileStore.getAll(),
-    
-    /**
-     * Get profile by local ID
-     */
-    getProfile: (localId) => ProfileStore.get(localId),
-    
-    /**
-     * Update profile health
-     */
-    setHealth: (localId, health) => {
-        ProfileStore.updateHealth(localId, health);
-        const profile = ProfileStore.get(localId);
-        if (profile) {
-            UIRenderer.updateHealthBar(localId, profile.health, profile.maxHealth);
-        }
-    },
-    
-    /**
-     * Damage a profile
-     */
-    damage: (localId, amount) => {
-        const profile = ProfileStore.get(localId);
-        if (profile) {
-            RobloxProfileAPI.setHealth(localId, profile.health - amount);
-        }
-    },
-    
-    /**
-     * Heal a profile
-     */
-    heal: (localId, amount) => {
-        const profile = ProfileStore.get(localId);
-        if (profile) {
-            RobloxProfileAPI.setHealth(localId, profile.health + amount);
-        }
-    },
-    
-    /**
-     * Remove a profile
-     */
-    removeProfile: (localId) => UIRenderer.handleRemove(localId),
-    
-    /**
-     * Get profile count
-     */
-    getCount: () => ProfileStore.count(),
-    
-    /**
-     * Subscribe to store changes (basic event system)
-     */
-    onProfileAdded: null,
-    onProfileRemoved: null,
-    onHealthChanged: null
-};
+/* Shake Animation */
+.profile-card.shake {
+    animation: shake 0.4s ease-out;
+}
 
-// ========================================
-// Initialize on DOM Ready
-// ========================================
-document.addEventListener('DOMContentLoaded', () => {
-    ProfileSpawner.init();
-});
+@keyframes shake {
+    0%, 100% { transform: translateX(0) rotate(0); }
+    10% { transform: translateX(-8px) rotate(-2deg); }
+    20% { transform: translateX(8px) rotate(2deg); }
+    30% { transform: translateX(-6px) rotate(-1deg); }
+    40% { transform: translateX(6px) rotate(1deg); }
+    50% { transform: translateX(-4px) rotate(-0.5deg); }
+    60% { transform: translateX(4px) rotate(0.5deg); }
+    70% { transform: translateX(-2px); }
+    80% { transform: translateX(2px); }
+    90% { transform: translateX(-1px); }
+}
 
-// Make API available globally for debugging
-window.RobloxProfileAPI = RobloxProfileAPI;
+/* Critical Hit Shake */
+.profile-card.critical-shake {
+    animation: critical-shake 0.5s ease-out;
+}
+
+@keyframes critical-shake {
+    0%, 100% { transform: translateX(0) translateY(0) rotate(0); }
+    10% { transform: translateX(-12px) translateY(-5px) rotate(-3deg); }
+    20% { transform: translateX(12px) translateY(5px) rotate(3deg); }
+    30% { transform: translateX(-10px) translateY(-3px) rotate(-2deg); }
+    40% { transform: translateX(10px) translateY(3px) rotate(2deg); }
+    50% { transform: translateX(-8px) translateY(-2px) rotate(-1deg); }
+    60% { transform: translateX(8px) translateY(2px) rotate(1deg); }
+    70% { transform: translateX(-4px) translateY(-1px); }
+    80% { transform: translateX(4px) translateY(1px); }
+}
+
+/* ========================================
+   Avatar Section
+======================================== */
+.avatar-wrapper {
+    position: relative;
+    width: 160px;
+    height: 160px;
+    margin: 0 auto 15px;
+}
+
+.avatar-image {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 4px solid var(--bg-secondary);
+    transition: var(--transition);
+    position: relative;
+    z-index: 1;
+}
+
+.avatar-image.damaged {
+    filter: saturate(0.8);
+}
+
+.avatar-image.critical {
+    filter: saturate(0.5) brightness(0.8);
+    border-color: var(--accent-primary);
+}
+
+/* ========================================
+   Crack Overlays
+======================================== */
+.crack-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    pointer-events: none;
+    z-index: 2;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+}
+
+.crack-overlay.visible {
+    opacity: 1;
+}
+
+/* Crack Level 1 - Light cracks */
+.crack-overlay.crack-1 {
+    background: 
+        linear-gradient(45deg, transparent 48%, rgba(0,0,0,0.4) 49%, rgba(0,0,0,0.4) 51%, transparent 52%),
+        linear-gradient(-30deg, transparent 48%, rgba(0,0,0,0.3) 49%, rgba(0,0,0,0.3) 51%, transparent 52%);
+    background-size: 60px 60px;
+}
+
+.crack-overlay.crack-1::before {
+    content: '';
+    position: absolute;
+    top: 20%;
+    left: 30%;
+    width: 40%;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, rgba(0,0,0,0.5), transparent);
+    transform: rotate(-15deg);
+}
+
+/* Crack Level 2 - Medium cracks */
+.crack-overlay.crack-2 {
+    background: 
+        radial-gradient(circle at 30% 30%, transparent 20%, rgba(0,0,0,0.1) 21%, transparent 22%),
+        linear-gradient(60deg, transparent 45%, rgba(0,0,0,0.5) 46%, rgba(0,0,0,0.5) 54%, transparent 55%),
+        linear-gradient(-45deg, transparent 45%, rgba(0,0,0,0.4) 46%, rgba(0,0,0,0.4) 54%, transparent 55%),
+        linear-gradient(15deg, transparent 47%, rgba(0,0,0,0.4) 48%, rgba(0,0,0,0.4) 52%, transparent 53%);
+    background-size: 100% 100%, 40px 40px, 50px 50px, 30px 30px;
+}
+
+.crack-overlay.crack-2::before,
+.crack-overlay.crack-2::after {
+    content: '';
+    position: absolute;
+    background: rgba(0,0,0,0.5);
+}
+
+.crack-overlay.crack-2::before {
+    top: 15%;
+    left: 20%;
+    width: 60%;
+    height: 3px;
+    transform: rotate(-25deg);
+    box-shadow: 
+        10px 20px 0 rgba(0,0,0,0.4),
+        -15px 40px 0 rgba(0,0,0,0.3);
+}
+
+.crack-overlay.crack-2::after {
+    top: 50%;
+    right: 15%;
+    width: 3px;
+    height: 40%;
+    transform: rotate(20deg);
+}
+
+/* Crack Level 3 - Heavy cracks */
+.crack-overlay.crack-3 {
+    background: 
+        radial-gradient(circle at 50% 50%, transparent 30%, rgba(0,0,0,0.15) 31%, transparent 35%),
+        linear-gradient(75deg, transparent 42%, rgba(0,0,0,0.6) 43%, rgba(0,0,0,0.6) 57%, transparent 58%),
+        linear-gradient(-60deg, transparent 42%, rgba(0,0,0,0.5) 43%, rgba(0,0,0,0.5) 57%, transparent 58%),
+        linear-gradient(30deg, transparent 44%, rgba(0,0,0,0.5) 45%, rgba(0,0,0,0.5) 55%, transparent 56%),
+        linear-gradient(-20deg, transparent 46%, rgba(0,0,0,0.4) 47%, rgba(0,0,0,0.4) 53%, transparent 54%);
+    background-size: 100% 100%, 25px 25px, 35px 35px, 20px 20px, 30px 30px;
+    animation: crack-pulse 1s ease-in-out infinite;
+}
+
+@keyframes crack-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.85; }
+}
+
+.crack-overlay.crack-3::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    border-radius: 50%;
+    border: 3px solid transparent;
+    border-top-color: rgba(255, 0, 0, 0.3);
+    border-right-color: rgba(255, 0, 0, 0.2);
+    animation: crack-rotate 3s linear infinite;
+}
+
+@keyframes crack-rotate {
+    to { transform: rotate(360deg); }
+}
+
+.crack-overlay.crack-3::after {
+    content: '';
+    position: absolute;
+    top: 10%;
+    left: 10%;
+    right: 10%;
+    bottom: 10%;
+    background: 
+        linear-gradient(45deg, transparent 30%, rgba(139, 0, 0, 0.2) 50%, transparent 70%),
+        linear-gradient(-45deg, transparent 30%, rgba(139, 0, 0, 0.2) 50%, transparent 70%);
+    border-radius: 50%;
+}
+
+/* ========================================
+   Destroyed State
+======================================== */
+.avatar-wrapper.destroyed .avatar-image {
+    opacity: 0;
+    transform: scale(0);
+    transition: all 0.5s ease-out;
+}
+
+.avatar-wrapper.destroyed .crack-overlay {
+    opacity: 0;
+}
+
+/* Shatter Pieces Container */
+.shatter-container {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 10;
+}
+
+.shatter-piece {
+    position: absolute;
+    background-size: 160px 160px;
+    border-radius: 2px;
+    opacity: 1;
+}
+
+.shatter-piece.animate {
+    animation: shatter-fly 0.8s ease-out forwards;
+}
+
+@keyframes shatter-fly {
+    0% {
+        opacity: 1;
+        transform: translate(0, 0) rotate(0deg) scale(1);
+    }
+    100% {
+        opacity: 0;
+        transform: translate(var(--tx), var(--ty)) rotate(var(--rot)) scale(0.3);
+    }
+}
+
+/* Destroyed Overlay */
+.destroyed-overlay {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 15;
+    text-align: center;
+    opacity: 0;
+    animation: destroyed-appear 0.5s ease-out 0.3s forwards;
+}
+
+@keyframes destroyed-appear {
+    from {
+        opacity: 0;
+        transform: translate(-50%, -50%) scale(0.5);
+    }
+    to {
+        opacity: 1;
+        transform: translate(-50%, -50%) scale(1);
+    }
+}
+
+.destroyed-text {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--accent-primary);
+    text-shadow: 0 0 10px rgba(233, 69, 96, 0.5);
+    white-space: nowrap;
+    margin-bottom: 10px;
+}
+
+.respawn-btn-small {
+    padding: 8px 16px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    border: none;
+    border-radius: 8px;
+    background: var(--accent-success);
+    color: var(--bg-primary);
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.respawn-btn-small:hover {
+    transform: scale(1.05);
+    box-shadow: 0 0 15px rgba(74, 222, 128, 0.5);
+}
+
+/* ========================================
+   Floating Damage Text
+======================================== */
+.damage-text {
+    position: absolute;
+    font-size: 1.5rem;
+    font-weight: 800;
+    color: var(--accent-primary);
+    text-shadow: 
+        2px 2px 0 #000,
+        -2px -2px 0 #000,
+        2px -2px 0 #000,
+        -2px 2px 0 #000,
+        0 0 10px rgba(233, 69, 96, 0.8);
+    pointer-events: none;
+    z-index: 100;
+    animation: damage-float 1s ease-out forwards;
+    white-space: nowrap;
+}
+
+.damage-text.critical {
+    font-size: 2rem;
+    color: #ff0000;
+    text-shadow: 
+        2px 2px 0 #000,
+        -2px -2px 0 #000,
+        2px -2px 0 #000,
+        -2px 2px 0 #000,
+        0 0 20px rgba(255, 0, 0, 0.9);
+}
+
+.damage-text.heal {
+    color: var(--accent-success);
+    text-shadow: 
+        2px 2px 0 #000,
+        -2px -2px 0 #000,
+        2px -2px 0 #000,
+        -2px 2px 0 #000,
+        0 0 10px rgba(74, 222, 128, 0.8);
+}
+
+@keyframes damage-float {
+    0% {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+    20% {
+        transform: translateY(-20px) scale(1.2);
+    }
+    100% {
+        opacity: 0;
+        transform: translateY(-60px) scale(0.8);
+    }
+}
+
+/* ========================================
+   Profile Info
+======================================== */
+.profile-info {
+    margin-bottom: 15px;
+}
+
+.display-name {
+    font-size: 1.2rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 3px;
+    word-break: break-word;
+}
+
+.username {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    word-break: break-word;
+}
+
+/* ========================================
+   Health Bar
+======================================== */
+.health-section {
+    margin-top: 15px;
+}
+
+.health-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.85rem;
+    margin-bottom: 6px;
+    color: var(--text-secondary);
+}
+
+.health-value {
+    font-weight: 600;
+    transition: color 0.3s ease;
+}
+
+.health-value.high { color: var(--health-high); }
+.health-value.mid { color: var(--health-mid); }
+.health-value.low { color: var(--health-low); }
+
+.health-bar-container {
+    width: 100%;
+    height: 14px;
+    background: var(--health-bg);
+    border-radius: 7px;
+    overflow: hidden;
+    position: relative;
+}
+
+.health-bar-fill {
+    height: 100%;
+    border-radius: 7px;
+    transition: width 0.3s ease, background 0.3s ease;
+    position: relative;
+    overflow: hidden;
+}
+
+.health-bar-fill.high {
+    background: linear-gradient(90deg, var(--health-high), #22c55e);
+}
+
+.health-bar-fill.mid {
+    background: linear-gradient(90deg, var(--health-mid), #d97706);
+}
+
+.health-bar-fill.low {
+    background: linear-gradient(90deg, var(--health-low), #dc2626);
+    animation: health-pulse 0.5s ease-in-out infinite;
+}
+
+@keyframes health-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+}
+
+.health-bar-fill::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 50%;
+    background: linear-gradient(180deg, rgba(255,255,255,0.3), transparent);
+    border-radius: 7px 7px 0 0;
+}
+
+/* ========================================
+   Profile Badges
+======================================== */
+.profile-id-badge {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    background: var(--bg-secondary);
+    padding: 4px 10px;
+    border-radius: 15px;
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+}
+
+.remove-btn {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    border: none;
+    background: rgba(233, 69, 96, 0.2);
+    color: var(--accent-primary);
+    font-size: 1.1rem;
+    cursor: pointer;
+    opacity: 0;
+    transition: var(--transition);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 20;
+}
+
+.profile-card:hover .remove-btn {
+    opacity: 1;
+}
+
+.remove-btn:hover {
+    background: var(--accent-primary);
+    color: var(--text-primary);
+}
+
+/* ========================================
+   Spark Particles (CSS-based)
+======================================== */
+.spark-container {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 0;
+    height: 0;
+    pointer-events: none;
+    z-index: 50;
+}
+
+.spark {
+    position: absolute;
+    width: 6px;
+    height: 6px;
+    background: var(--accent-secondary);
+    border-radius: 50%;
+    animation: spark-fly 0.6s ease-out forwards;
+    box-shadow: 0 0 6px var(--accent-secondary), 0 0 12px var(--accent-primary);
+}
+
+@keyframes spark-fly {
+    0% {
+        opacity: 1;
+        transform: translate(0, 0) scale(1);
+    }
+    100% {
+        opacity: 0;
+        transform: translate(var(--sx), var(--sy)) scale(0);
+    }
+}
+
+/* ========================================
+   Empty State
+======================================== */
+.empty-state {
+    grid-column: 1 / -1;
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--text-secondary);
+}
+
+.empty-state-icon {
+    font-size: 4rem;
+    margin-bottom: 15px;
+    opacity: 0.5;
+}
+
+.empty-state-text {
+    font-size: 1.1rem;
+}
+
+/* ========================================
+   Loading Spinner
+======================================== */
+.loading-spinner {
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    border: 3px solid var(--bg-secondary);
+    border-top-color: var(--accent-secondary);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* ========================================
+   Responsive Design
+======================================== */
+@media (max-width: 768px) {
+    .input-section h1 {
+        font-size: 1.7rem;
+    }
+
+    #username-input {
+        width: 100%;
+    }
+
+    #add-profile-btn {
+        width: 100%;
+    }
+
+    .tools-container {
+        gap: 8px;
+    }
+
+    .tool-btn {
+        padding: 10px 16px;
+        font-size: 0.85rem;
+    }
+
+    .stats-bar {
+        flex-direction: column;
+        text-align: center;
+    }
+
+    .stats-left {
+        justify-content: center;
+    }
+
+    .profiles-container {
+        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        gap: 15px;
+    }
+
+    .avatar-wrapper {
+        width: 130px;
+        height: 130px;
+    }
+}

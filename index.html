@@ -2,137 +2,136 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Roblox Dummy Arena - Ultimate Combat</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Roblox Dummy Arena</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <div class="app-wrapper">
-        <!-- ================================
-             Sidebar Tool Menu
-        ================================= -->
-        <aside class="sidebar" id="sidebar">
-            <div class="sidebar-header">
-                <h2 class="sidebar-title">⚔️ Arsenal</h2>
-                <button class="sidebar-toggle" id="sidebar-toggle">◀</button>
+    <!-- Main Game Container -->
+    <div class="game-container">
+        
+        <!-- Header Bar -->
+        <header class="game-header">
+            <h1 class="game-title">🎯 Dummy Arena</h1>
+            <div class="header-controls">
+                <button class="header-btn" id="spawn-btn" title="Add Dummy">➕</button>
+                <button class="header-btn" id="sound-btn" title="Toggle Sound">🔊</button>
+                <button class="header-btn" id="reset-btn" title="Reset All">🔄</button>
             </div>
-            
-            <div class="tools-list" id="tools-list">
-                <!-- Tools will be rendered here -->
-            </div>
-            
-            <div class="sidebar-footer">
-                <div class="selected-tool-display" id="selected-tool-display">
-                    <span class="selected-icon">👊</span>
-                    <div class="selected-info">
-                        <span class="selected-name">Punch</span>
-                        <span class="selected-damage">10 DMG</span>
+        </header>
+
+        <!-- Game Arena -->
+        <div class="arena-wrapper">
+            <div class="game-arena" id="game-arena">
+                <!-- Canvas for rendering -->
+                <canvas id="game-canvas"></canvas>
+                
+                <!-- Corner decorations -->
+                <div class="arena-corner tl"></div>
+                <div class="arena-corner tr"></div>
+                <div class="arena-corner bl"></div>
+                <div class="arena-corner br"></div>
+                
+                <!-- Flash overlay for impacts -->
+                <div class="arena-flash red" id="flash-red"></div>
+                <div class="arena-flash blue" id="flash-blue"></div>
+                <div class="arena-flash white" id="flash-white"></div>
+                
+                <!-- Empty state message -->
+                <div class="arena-empty" id="arena-empty">
+                    <div class="arena-empty-icon">🎯</div>
+                    <p class="arena-empty-text">Tap ➕ to spawn a dummy!</p>
+                </div>
+                
+                <!-- Stats display -->
+                <div class="stats-display" id="stats-display">
+                    <div class="stat-item">
+                        <span class="stat-icon">👥</span>
+                        <span class="stat-label">Dummies:</span>
+                        <span class="stat-value" id="stat-dummies">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-icon">💥</span>
+                        <span class="stat-label">Damage:</span>
+                        <span class="stat-value" id="stat-damage">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-icon">💀</span>
+                        <span class="stat-label">Destroyed:</span>
+                        <span class="stat-value" id="stat-destroyed">0</span>
                     </div>
                 </div>
             </div>
-        </aside>
+        </div>
 
-        <!-- ================================
-             Main Content Area
-        ================================= -->
-        <main class="main-content">
-            <!-- Header / Input Section -->
-            <header class="input-section">
-                <h1 class="main-title">
-                    <span class="title-icon">🎯</span>
-                    Roblox Dummy Arena
-                    <span class="title-icon">🎯</span>
-                </h1>
-                <p class="subtitle">Spawn targets • Choose weapons • Unleash destruction</p>
-                
-                <div class="input-wrapper">
-                    <div class="input-container">
-                        <span class="input-icon">🔍</span>
-                        <input 
-                            type="text" 
-                            id="username-input" 
-                            placeholder="Enter Roblox username..."
-                            autocomplete="off"
-                        >
-                        <button id="add-profile-btn" class="add-btn">
-                            <span class="btn-text">Add Dummy</span>
-                            <span class="btn-icon">+</span>
-                        </button>
-                    </div>
-                </div>
-                
-                <p id="status-message" class="status-message"></p>
-            </header>
-
-            <!-- Stats Bar -->
-            <div class="stats-bar">
-                <div class="stat-item">
-                    <span class="stat-icon">👥</span>
-                    <span class="stat-label">Dummies</span>
-                    <span class="stat-value" id="profile-count">0</span>
-                </div>
-                <div class="stat-item">
-                    <span class="stat-icon">💀</span>
-                    <span class="stat-label">Destroyed</span>
-                    <span class="stat-value" id="destroyed-count">0</span>
-                </div>
-                <div class="stat-item">
-                    <span class="stat-icon">💥</span>
-                    <span class="stat-label">Total Damage</span>
-                    <span class="stat-value" id="total-damage">0</span>
-                </div>
-                <div class="stat-item">
-                    <span class="stat-icon">🎯</span>
-                    <span class="stat-label">Hits</span>
-                    <span class="stat-value" id="total-hits">0</span>
-                </div>
-                
-                <div class="stat-actions">
-                    <button id="respawn-all-btn" class="action-btn respawn-btn">
-                        <span>↻</span> Respawn All
-                    </button>
-                    <button id="clear-all-btn" class="action-btn clear-btn">
-                        <span>✕</span> Clear All
-                    </button>
-                </div>
-            </div>
-
-            <!-- Profile Grid Container -->
-            <section id="profiles-container" class="profiles-container">
-                <!-- Profiles will be spawned here -->
-            </section>
-        </main>
+        <!-- Tools Panel -->
+        <div class="tools-panel" id="tools-panel">
+            <button class="tool-btn selected" data-tool="hand" title="Hand - Drag & Throw">
+                <span class="tool-icon">✋</span>
+                <span class="tool-name">Hand</span>
+            </button>
+            <button class="tool-btn" data-tool="tap" title="Tap - Direct Damage">
+                <span class="tool-icon">👆</span>
+                <span class="tool-name">Tap</span>
+            </button>
+            <button class="tool-btn" data-tool="hammer" title="Hammer - Heavy Hit">
+                <span class="tool-icon">🔨</span>
+                <span class="tool-name">Hammer</span>
+            </button>
+            <button class="tool-btn" data-tool="push" title="Push - Directional Force">
+                <span class="tool-icon">💨</span>
+                <span class="tool-name">Push</span>
+            </button>
+            <button class="tool-btn" data-tool="explosion" title="Explosion - Area Damage">
+                <span class="tool-icon">💣</span>
+                <span class="tool-name">Bomb</span>
+            </button>
+            <button class="tool-btn" data-tool="freeze" title="Freeze - Stop Movement">
+                <span class="tool-icon">❄️</span>
+                <span class="tool-name">Freeze</span>
+            </button>
+            <button class="tool-btn" data-tool="dot" title="Fire - Damage Over Time">
+                <span class="tool-icon">🔥</span>
+                <span class="tool-name">Fire</span>
+            </button>
+        </div>
     </div>
 
-    <!-- ================================
-         Global Overlays & Effects
-    ================================= -->
-    
-    <!-- Screen Flash Effect -->
-    <div class="screen-flash" id="screen-flash"></div>
-    
-    <!-- Screen Shake Container -->
-    <div class="screen-shake-wrapper" id="screen-shake-wrapper"></div>
-    
-    <!-- Electric Flicker Overlay -->
-    <div class="electric-overlay" id="electric-overlay"></div>
-    
-    <!-- Heat Distortion Overlay -->
-    <div class="heat-overlay" id="heat-overlay"></div>
-    
-    <!-- Particle Canvas -->
-    <canvas id="particle-canvas"></canvas>
-    
-    <!-- Sound Toggle -->
-    <button id="sound-toggle" class="sound-toggle" title="Toggle Sound">
-        🔊
-    </button>
+    <!-- Spawn Panel Modal -->
+    <div class="panel-overlay" id="panel-overlay"></div>
+    <div class="spawn-panel" id="spawn-panel">
+        <button class="panel-close" id="panel-close">×</button>
+        <h2 class="panel-title">🎮 Spawn Dummy</h2>
+        <div class="panel-input-group">
+            <input 
+                type="text" 
+                class="panel-input" 
+                id="username-input" 
+                placeholder="Roblox Username..."
+                autocomplete="off"
+            >
+        </div>
+        <div class="panel-buttons">
+            <button class="panel-btn primary" id="spawn-confirm">
+                <span class="btn-icon">✓</span>
+                <span class="btn-text">Spawn</span>
+            </button>
+            <button class="panel-btn secondary" id="spawn-random">
+                <span class="btn-icon">🎲</span>
+                <span class="btn-text">Random</span>
+            </button>
+        </div>
+        <p class="panel-status" id="panel-status"></p>
+        <div class="panel-presets">
+            <p class="presets-label">Quick spawn:</p>
+            <div class="presets-list">
+                <button class="preset-btn" data-username="Roblox">Roblox</button>
+                <button class="preset-btn" data-username="Builderman">Builderman</button>
+            </div>
+        </div>
+    </div>
 
-    <!-- Mobile Tool Toggle -->
-    <button id="mobile-tool-toggle" class="mobile-tool-toggle">
-        ⚔️
-    </button>
-
+    <!-- Load JavaScript -->
     <script src="script.js"></script>
 </body>
 </html>

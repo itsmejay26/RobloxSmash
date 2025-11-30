@@ -1,809 +1,255 @@
 /**
- * ========================================
- * Roblox Dummy Arena - Ultimate Combat System
- * ========================================
- * Complete weapon system with unique effects,
- * particles, physics, and polished UI
- * ========================================
+ * ============================================
+ * ROBLOX DUMMY ARENA - PHYSICS GAME
+ * ============================================
+ * A "Kick the Buddy" style game with Roblox avatars
+ * Features: Physics, Tools, Damage System, Sound Effects
+ * ============================================
  */
 
-// ========================================
+// ============================================
 // CONFIGURATION
-// ========================================
+// ============================================
 const CONFIG = {
-    // API Settings
-    useCorsProxy: true,
-    corsProxyUrl: 'https://corsproxy.io/?',
+    // Physics
+    gravity: 0.4,
+    friction: 0.985,
+    bounceFactor: 0.65,
+    airResistance: 0.998,
     
-    // Retry settings for rate limiting (429 errors)
+    // Dummy settings
+    dummyRadius: 50,
+    dummyMaxHP: 10000,
+    dummyMass: 1,
+    
+    // Damage
+    tapDamage: 5,
+    minImpactSpeed: 3,
+    impactDamageMultiplier: 2.5,
+    maxImpactDamage: 500,
+    
+    // Throw
+    throwMultiplier: 0.25,
+    maxThrowSpeed: 35,
+    
+    // Crack stages (percentage thresholds)
+    crackStages: [80, 60, 40, 20, 5],
+    
+    // API
+    corsProxy: 'https://corsproxy.io/?',
+    robloxAvatarAPI: 'https://thumbnails.roblox.com/v1/users/avatar-headshot',
+    robloxUserAPI: 'https://users.roblox.com/v1/usernames/users',
+    robloxUserInfoAPI: 'https://users.roblox.com/v1/users/',
+    
+    // Retry settings
     maxRetries: 3,
-    baseRetryDelay: 1000, // 1 second
-    maxRetryDelay: 10000, // 10 seconds
-    
-    endpoints: {
-        usernames: 'https://users.roblox.com/v1/usernames/users',
-        userInfo: 'https://users.roblox.com/v1/users/',
-        avatar: 'https://thumbnails.roblox.com/v1/users/avatar'
-    },
-    
-    avatarSize: '420x420',
-    avatarFormat: 'Png',
-    
-    // Game Settings
-    defaultHealth: 100,
-    maxHealth: 100,
-    
-    // Crack thresholds
-    crackThresholds: {
-        crack1: 75,
-        crack2: 50,
-        crack3: 25
-    },
+    retryDelay: 1000,
     
     // Sound
-    soundEnabled: true,
-    
-    // DOT Settings
-    dotTickInterval: 500, // ms between DOT ticks
-    
-    // Physics
-    knockbackEnabled: true
+    soundEnabled: true
 };
 
-// ========================================
+// ============================================
 // UTILITY FUNCTIONS
-// ========================================
+// ============================================
 const Utils = {
-    /**
-     * Sleep/delay function
-     */
-    sleep(ms) {
-        return new Promise(resolve => setTimeout(resolve, ms));
-    },
-    
-    /**
-     * Get random number between min and max
-     */
     random(min, max) {
         return Math.random() * (max - min) + min;
     },
     
-    /**
-     * Get random integer between min and max (inclusive)
-     */
     randomInt(min, max) {
         return Math.floor(Math.random() * (max - min + 1)) + min;
     },
     
-    /**
-     * Clamp a value between min and max
-     */
     clamp(value, min, max) {
         return Math.min(Math.max(value, min), max);
     },
     
-    /**
-     * Escape HTML to prevent XSS
-     */
-    escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str;
-        return div.innerHTML;
+    distance(x1, y1, x2, y2) {
+        return Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
     },
     
-    /**
-     * Generate unique ID
-     */
-    generateId() {
-        return Date.now().toString(36) + Math.random().toString(36).substr(2);
+    lerp(start, end, t) {
+        return start + (end - start) * t;
+    },
+    
+    async sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
     }
 };
 
-// ========================================
-// ROBLOX API SERVICE
-// With retry logic for rate limiting
-// ========================================
-const RobloxAPI = {
-    // Cache for fetched profiles to avoid repeat requests
-    cache: new Map(),
-    
-    // Request queue to prevent overwhelming the API
-    requestQueue: Promise.resolve(),
-    lastRequestTime: 0,
-    minRequestInterval: 500, // Minimum 500ms between requests
-    
-    /**
-     * Build URL with optional CORS proxy
-     */
-    buildUrl(url) {
-        if (CONFIG.useCorsProxy) {
-            return CONFIG.corsProxyUrl + encodeURIComponent(url);
-        }
-        return url;
-    },
-    
-    /**
-     * Queue a request to prevent rate limiting
-     */
-    async queueRequest(requestFn) {
-        this.requestQueue = this.requestQueue.then(async () => {
-            const now = Date.now();
-            const timeSinceLastRequest = now - this.lastRequestTime;
-            
-            if (timeSinceLastRequest < this.minRequestInterval) {
-                await Utils.sleep(this.minRequestInterval - timeSinceLastRequest);
-            }
-            
-            this.lastRequestTime = Date.now();
-            return requestFn();
-        });
-        
-        return this.requestQueue;
-    },
-    
-    /**
-     * Fetch with retry logic for rate limiting
-     */
-    async fetchWithRetry(url, options = {}, retryCount = 0) {
-        try {
-            const response = await fetch(url, options);
-            
-            // Handle rate limiting (429)
-            if (response.status === 429) {
-                if (retryCount < CONFIG.maxRetries) {
-                    // Calculate delay with exponential backoff
-                    const delay = Math.min(
-                        CONFIG.baseRetryDelay * Math.pow(2, retryCount),
-                        CONFIG.maxRetryDelay
-                    );
-                    
-                    console.warn(`Rate limited (429). Retrying in ${delay}ms... (Attempt ${retryCount + 1}/${CONFIG.maxRetries})`);
-                    
-                    // Update UI to show retry status
-                    UIRenderer.setStatus(`Rate limited. Retrying in ${Math.ceil(delay/1000)}s...`, 'warning');
-                    
-                    await Utils.sleep(delay);
-                    return this.fetchWithRetry(url, options, retryCount + 1);
-                } else {
-                    throw new Error('Rate limited by Roblox API. Please wait a moment and try again.');
-                }
-            }
-            
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-            }
-            
-            return response;
-        } catch (error) {
-            // Network errors - retry
-            if (error.name === 'TypeError' && retryCount < CONFIG.maxRetries) {
-                const delay = CONFIG.baseRetryDelay * Math.pow(2, retryCount);
-                console.warn(`Network error. Retrying in ${delay}ms...`);
-                await Utils.sleep(delay);
-                return this.fetchWithRetry(url, options, retryCount + 1);
-            }
-            throw error;
-        }
-    },
-    
-    /**
-     * Get User ID from username
-     */
-    async getUserId(username) {
-        // Check cache first
-        const cacheKey = `userid_${username.toLowerCase()}`;
-        if (this.cache.has(cacheKey)) {
-            return this.cache.get(cacheKey);
-        }
-        
-        return this.queueRequest(async () => {
-            const url = this.buildUrl(CONFIG.endpoints.usernames);
-            
-            const response = await this.fetchWithRetry(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    usernames: [username],
-                    excludeBannedUsers: false
-                })
-            });
-            
-            const data = await response.json();
-            
-            if (data.data && data.data.length > 0) {
-                const userId = data.data[0].id;
-                this.cache.set(cacheKey, userId);
-                return userId;
-            }
-            
-            return null;
-        });
-    },
-    
-    /**
-     * Get user profile info
-     */
-    async getUserInfo(userId) {
-        const cacheKey = `userinfo_${userId}`;
-        if (this.cache.has(cacheKey)) {
-            return this.cache.get(cacheKey);
-        }
-        
-        return this.queueRequest(async () => {
-            const url = this.buildUrl(`${CONFIG.endpoints.userInfo}${userId}`);
-            const response = await this.fetchWithRetry(url);
-            const data = await response.json();
-            
-            this.cache.set(cacheKey, data);
-            return data;
-        });
-    },
-    
-    /**
-     * Get user avatar URL
-     */
-    async getAvatarUrl(userId) {
-        const cacheKey = `avatar_${userId}`;
-        if (this.cache.has(cacheKey)) {
-            return this.cache.get(cacheKey);
-        }
-        
-        return this.queueRequest(async () => {
-            const params = new URLSearchParams({
-                userIds: userId,
-                size: CONFIG.avatarSize,
-                format: CONFIG.avatarFormat
-            });
-            
-            const url = this.buildUrl(`${CONFIG.endpoints.avatar}?${params}`);
-            const response = await this.fetchWithRetry(url);
-            const data = await response.json();
-            
-            if (data.data && data.data.length > 0) {
-                const avatarUrl = data.data[0].imageUrl;
-                this.cache.set(cacheKey, avatarUrl);
-                return avatarUrl;
-            }
-            
-            return null;
-        });
-    },
-    
-    /**
-     * Fetch complete profile data
-     */
-    async fetchProfile(username) {
-        // Check if entire profile is cached
-        const cacheKey = `profile_${username.toLowerCase()}`;
-        if (this.cache.has(cacheKey)) {
-            console.log(`Using cached profile for ${username}`);
-            return this.cache.get(cacheKey);
-        }
-        
-        // Step 1: Get User ID
-        const userId = await this.getUserId(username);
-        
-        if (!userId) {
-            throw new Error(`User "${username}" not found`);
-        }
-        
-        // Step 2: Get User Info and Avatar (with small delay between)
-        const userInfo = await this.getUserInfo(userId);
-        await Utils.sleep(200); // Small delay between requests
-        const avatarUrl = await this.getAvatarUrl(userId);
-        
-        const profile = {
-            id: userInfo.id,
-            name: userInfo.name,
-            displayName: userInfo.displayName,
-            avatarUrl: avatarUrl
-        };
-        
-        // Cache the complete profile
-        this.cache.set(cacheKey, profile);
-        
-        return profile;
-    },
-    
-    /**
-     * Clear cache
-     */
-    clearCache() {
-        this.cache.clear();
-    }
-};
-
-// ========================================
-// TOOLS REGISTRY
-// All weapons and their properties
-// ========================================
-const ToolsRegistry = {
-    tools: new Map(),
-    selectedTool: null,
-    
-    /**
-     * Initialize all tools
-     */
-    init() {
-        // Melee Category
-        this.register({
-            id: 'punch',
-            name: 'Punch',
-            icon: '👊',
-            category: 'melee',
-            damage: 10,
-            criticalChance: 0.1,
-            criticalMultiplier: 2,
-            effects: ['spark'],
-            shake: 'light',
-            sound: 'punch',
-            color: '#ff6b6b',
-            colorRgb: '255, 107, 107',
-            description: 'Quick jab'
-        });
-        
-        this.register({
-            id: 'kick',
-            name: 'Kick',
-            icon: '🦵',
-            category: 'melee',
-            damage: 15,
-            criticalChance: 0.15,
-            criticalMultiplier: 2,
-            effects: ['spark', 'knockback'],
-            shake: 'medium',
-            sound: 'kick',
-            color: '#ffa94d',
-            colorRgb: '255, 169, 77',
-            description: 'Powerful kick'
-        });
-        
-        this.register({
-            id: 'hammer',
-            name: 'Hammer',
-            icon: '🔨',
-            category: 'melee',
-            damage: 35,
-            criticalChance: 0.2,
-            criticalMultiplier: 2.5,
-            effects: ['spark', 'smoke', 'screenShake', 'knockback', 'bounce'],
-            shake: 'heavy',
-            sound: 'hammer',
-            color: '#845ef7',
-            colorRgb: '132, 94, 247',
-            description: 'Heavy smash'
-        });
-        
-        // Ranged Category
-        this.register({
-            id: 'gun',
-            name: 'Gun',
-            icon: '🔫',
-            category: 'ranged',
-            damage: 25,
-            criticalChance: 0.25,
-            criticalMultiplier: 3,
-            effects: ['bulletHole', 'spark', 'smoke', 'recoil'],
-            shake: 'medium',
-            sound: 'gun',
-            color: '#495057',
-            colorRgb: '73, 80, 87',
-            description: 'Ranged shot'
-        });
-        
-        this.register({
-            id: 'laser',
-            name: 'Laser',
-            icon: '🔴',
-            category: 'ranged',
-            damage: 30,
-            criticalChance: 0.15,
-            criticalMultiplier: 2,
-            effects: ['laserBurn', 'heatDistortion', 'spark'],
-            shake: 'light',
-            sound: 'laser',
-            color: '#ff0080',
-            colorRgb: '255, 0, 128',
-            description: 'Heat beam'
-        });
-        
-        // Explosive Category
-        this.register({
-            id: 'bomb',
-            name: 'Bomb',
-            icon: '💣',
-            category: 'explosive',
-            damage: 50,
-            criticalChance: 0.1,
-            criticalMultiplier: 2,
-            effects: ['explosion', 'screenShake', 'smoke', 'shockwave', 'knockbackAll'],
-            shake: 'heavy',
-            sound: 'explosion',
-            color: '#ff4757',
-            colorRgb: '255, 71, 87',
-            isAOE: true,
-            aoeRadius: 300,
-            description: 'Area damage'
-        });
-        
-        // Elemental Category
-        this.register({
-            id: 'fire',
-            name: 'Fire',
-            icon: '🔥',
-            category: 'elemental',
-            damage: 15,
-            criticalChance: 0.1,
-            criticalMultiplier: 1.5,
-            effects: ['burn', 'fireParticles'],
-            shake: 'light',
-            sound: 'fire',
-            color: '#ff6348',
-            colorRgb: '255, 99, 72',
-            dot: {
-                damage: 5,
-                duration: 3000,
-                ticks: 6
-            },
-            description: 'Burn DOT'
-        });
-        
-        this.register({
-            id: 'electric',
-            name: 'Electric',
-            icon: '⚡',
-            category: 'elemental',
-            damage: 20,
-            criticalChance: 0.3,
-            criticalMultiplier: 2.5,
-            effects: ['electricArc', 'electricFlicker', 'spark'],
-            shake: 'medium',
-            sound: 'electric',
-            color: '#00d4ff',
-            colorRgb: '0, 212, 255',
-            description: 'Chain lightning'
-        });
-        
-        // Select default tool
-        this.select('punch');
-    },
-    
-    /**
-     * Register a tool
-     */
-    register(tool) {
-        this.tools.set(tool.id, tool);
-    },
-    
-    /**
-     * Get tool by ID
-     */
-    get(id) {
-        return this.tools.get(id);
-    },
-    
-    /**
-     * Get all tools
-     */
-    getAll() {
-        return Array.from(this.tools.values());
-    },
-    
-    /**
-     * Get tools by category
-     */
-    getByCategory(category) {
-        return this.getAll().filter(t => t.category === category);
-    },
-    
-    /**
-     * Get all categories
-     */
-    getCategories() {
-        const categories = new Set(this.getAll().map(t => t.category));
-        return Array.from(categories);
-    },
-    
-    /**
-     * Select a tool
-     */
-    select(id) {
-        this.selectedTool = this.tools.get(id) || null;
-        return this.selectedTool;
-    },
-    
-    /**
-     * Get selected tool
-     */
-    getSelected() {
-        return this.selectedTool;
-    },
-    
-    /**
-     * Calculate damage with critical hit
-     */
-    calculateDamage(tool) {
-        const isCritical = Math.random() < tool.criticalChance;
-        const damage = isCritical
-            ? Math.floor(tool.damage * tool.criticalMultiplier)
-            : tool.damage;
-        return { damage, isCritical };
-    }
-};
-
-// ========================================
-// SOUND SYSTEM
-// Procedural audio generation
-// ========================================
+// ============================================
+// SOUND SYSTEM (Web Audio API)
+// ============================================
 const SoundSystem = {
-    audioContext: null,
+    ctx: null,
     enabled: CONFIG.soundEnabled,
-    masterGain: null,
+    initialized: false,
     
-    /**
-     * Initialize audio system
-     */
     init() {
+        if (this.initialized) return;
         try {
-            this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            this.masterGain = this.audioContext.createGain();
-            this.masterGain.connect(this.audioContext.destination);
-            this.masterGain.gain.value = 0.5;
+            this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+            this.initialized = true;
         } catch (e) {
-            console.warn('Web Audio API not supported');
+            console.warn('Web Audio not supported');
             this.enabled = false;
         }
     },
     
-    /**
-     * Toggle sound
-     */
+    resume() {
+        if (this.ctx && this.ctx.state === 'suspended') {
+            this.ctx.resume();
+        }
+    },
+    
     toggle() {
         this.enabled = !this.enabled;
         return this.enabled;
     },
     
-    /**
-     * Resume audio context (required after user interaction)
-     */
-    resume() {
-        if (this.audioContext && this.audioContext.state === 'suspended') {
-            this.audioContext.resume();
-        }
-    },
-    
-    /**
-     * Play a sound effect
-     */
-    play(type) {
-        if (!this.enabled || !this.audioContext) return;
+    play(type, options = {}) {
+        if (!this.enabled || !this.ctx) return;
         this.resume();
         
         const sounds = {
-            punch: () => this.playPunch(),
-            kick: () => this.playKick(),
+            tap: () => this.playTap(),
+            hit: () => this.playHit(options.intensity || 0.5),
+            impact: () => this.playImpact(options.intensity || 0.5),
+            crack: () => this.playCrack(),
+            break: () => this.playBreak(),
             hammer: () => this.playHammer(),
-            gun: () => this.playGun(),
-            laser: () => this.playLaser(),
+            push: () => this.playPush(),
             explosion: () => this.playExplosion(),
+            freeze: () => this.playFreeze(),
             fire: () => this.playFire(),
-            electric: () => this.playElectric(),
-            critical: () => this.playCritical(),
-            destroy: () => this.playDestroy(),
-            respawn: () => this.playRespawn(),
-            dot: () => this.playDot()
+            ui: () => this.playUI()
         };
         
-        if (sounds[type]) {
-            sounds[type]();
-        }
+        if (sounds[type]) sounds[type]();
     },
     
-    /**
-     * Create oscillator
-     */
     createOsc(freq, type, duration, gain = 0.3) {
-        const osc = this.audioContext.createOscillator();
-        const gainNode = this.audioContext.createGain();
-        
+        const osc = this.ctx.createOscillator();
+        const gainNode = this.ctx.createGain();
         osc.connect(gainNode);
-        gainNode.connect(this.masterGain);
-        
+        gainNode.connect(this.ctx.destination);
         osc.frequency.value = freq;
         osc.type = type;
-        
-        const now = this.audioContext.currentTime;
-        gainNode.gain.setValueAtTime(gain, now);
-        gainNode.gain.exponentialRampToValueAtTime(0.01, now + duration);
-        
-        osc.start(now);
-        osc.stop(now + duration);
+        gainNode.gain.setValueAtTime(gain, this.ctx.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + duration);
+        osc.start();
+        osc.stop(this.ctx.currentTime + duration);
     },
     
-    /**
-     * Create noise
-     */
-    createNoise(duration, gain = 0.2, filterFreq = 1000) {
-        const bufferSize = this.audioContext.sampleRate * duration;
-        const buffer = this.audioContext.createBuffer(1, bufferSize, this.audioContext.sampleRate);
+    createNoise(duration, gain = 0.2, freq = 1000) {
+        const bufferSize = this.ctx.sampleRate * duration;
+        const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
         const output = buffer.getChannelData(0);
-        
         for (let i = 0; i < bufferSize; i++) {
             output[i] = Math.random() * 2 - 1;
         }
-        
-        const noise = this.audioContext.createBufferSource();
-        const gainNode = this.audioContext.createGain();
-        const filter = this.audioContext.createBiquadFilter();
-        
+        const noise = this.ctx.createBufferSource();
+        const gainNode = this.ctx.createGain();
+        const filter = this.ctx.createBiquadFilter();
         noise.buffer = buffer;
         filter.type = 'lowpass';
-        filter.frequency.value = filterFreq;
-        
+        filter.frequency.value = freq;
         noise.connect(filter);
         filter.connect(gainNode);
-        gainNode.connect(this.masterGain);
-        
-        const now = this.audioContext.currentTime;
-        gainNode.gain.setValueAtTime(gain, now);
-        gainNode.gain.exponentialRampToValueAtTime(0.01, now + duration);
-        
-        noise.start(now);
-        noise.stop(now + duration);
+        gainNode.connect(this.ctx.destination);
+        gainNode.gain.setValueAtTime(gain, this.ctx.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + duration);
+        noise.start();
+        noise.stop(this.ctx.currentTime + duration);
     },
     
-    playPunch() {
-        this.createNoise(0.1, 0.25, 800);
-        this.createOsc(150, 'sine', 0.08, 0.2);
+    playTap() {
+        this.createNoise(0.05, 0.15, 1200);
+        this.createOsc(200, 'sine', 0.05, 0.1);
     },
     
-    playKick() {
-        this.createNoise(0.12, 0.3, 600);
-        this.createOsc(100, 'sine', 0.1, 0.25);
-        this.createOsc(80, 'triangle', 0.08, 0.15);
+    playHit(intensity) {
+        const gain = 0.2 + intensity * 0.3;
+        this.createNoise(0.1, gain, 800);
+        this.createOsc(100 + intensity * 50, 'sine', 0.1, gain * 0.6);
+    },
+    
+    playImpact(intensity) {
+        const gain = 0.15 + intensity * 0.35;
+        const duration = 0.1 + intensity * 0.15;
+        this.createNoise(duration, gain, 600);
+        this.createOsc(80 + intensity * 40, 'sine', duration, gain * 0.5);
+        this.createOsc(50 + intensity * 30, 'triangle', duration * 0.8, gain * 0.3);
+    },
+    
+    playCrack() {
+        this.createNoise(0.15, 0.35, 2000);
+        this.createOsc(400, 'sawtooth', 0.08, 0.2);
+    },
+    
+    playBreak() {
+        this.createNoise(0.4, 0.5, 500);
+        this.createOsc(60, 'sawtooth', 0.3, 0.4);
+        setTimeout(() => {
+            this.createNoise(0.3, 0.3, 300);
+            this.createOsc(40, 'square', 0.25, 0.3);
+        }, 100);
     },
     
     playHammer() {
-        this.createNoise(0.25, 0.4, 400);
-        this.createOsc(60, 'sine', 0.2, 0.35);
-        this.createOsc(40, 'sawtooth', 0.15, 0.2);
-        setTimeout(() => {
-            this.createOsc(30, 'sine', 0.1, 0.15);
-            this.createNoise(0.15, 0.2, 200);
-        }, 50);
+        this.createNoise(0.2, 0.45, 400);
+        this.createOsc(70, 'sine', 0.2, 0.35);
+        this.createOsc(50, 'sawtooth', 0.15, 0.25);
     },
     
-    playGun() {
-        this.createNoise(0.08, 0.5, 2000);
-        this.createOsc(200, 'square', 0.05, 0.3);
-        setTimeout(() => {
-            this.createNoise(0.15, 0.2, 500);
-        }, 30);
-    },
-    
-    playLaser() {
-        this.createOsc(800, 'sine', 0.15, 0.25);
-        this.createOsc(1200, 'sine', 0.1, 0.15);
-        setTimeout(() => {
-            this.createOsc(600, 'triangle', 0.2, 0.2);
-        }, 50);
+    playPush() {
+        this.createNoise(0.15, 0.25, 1500);
+        this.createOsc(300, 'sine', 0.12, 0.15);
     },
     
     playExplosion() {
         this.createNoise(0.5, 0.6, 300);
-        this.createOsc(50, 'sawtooth', 0.4, 0.4);
-        this.createOsc(30, 'square', 0.5, 0.3);
-        
-        setTimeout(() => {
-            this.createNoise(0.3, 0.4, 200);
-            this.createOsc(20, 'sine', 0.3, 0.2);
-        }, 100);
-        
-        setTimeout(() => {
-            this.createNoise(0.2, 0.2, 100);
-        }, 250);
+        this.createOsc(50, 'sawtooth', 0.4, 0.45);
+        this.createOsc(30, 'square', 0.5, 0.35);
+        setTimeout(() => this.createNoise(0.3, 0.35, 150), 100);
+    },
+    
+    playFreeze() {
+        this.createOsc(800, 'sine', 0.2, 0.2);
+        this.createOsc(1200, 'sine', 0.15, 0.15);
+        this.createNoise(0.1, 0.15, 3000);
     },
     
     playFire() {
-        this.createNoise(0.2, 0.3, 1500);
-        this.createOsc(300, 'sawtooth', 0.15, 0.15);
-        this.createOsc(400, 'sine', 0.1, 0.1);
+        this.createNoise(0.2, 0.25, 1200);
+        this.createOsc(250, 'sawtooth', 0.15, 0.15);
     },
     
-    playElectric() {
-        // Crackling electric sound
-        for (let i = 0; i < 5; i++) {
-            setTimeout(() => {
-                this.createNoise(0.05, 0.3, 3000);
-                this.createOsc(Utils.random(800, 1500), 'sawtooth', 0.05, 0.2);
-            }, i * 40);
-        }
-        this.createOsc(100, 'square', 0.2, 0.15);
-    },
-    
-    playCritical() {
-        this.createNoise(0.2, 0.4, 1500);
-        this.createOsc(200, 'square', 0.1, 0.25);
-        this.createOsc(150, 'sawtooth', 0.15, 0.2);
-        setTimeout(() => {
-            this.createOsc(250, 'sine', 0.1, 0.2);
-        }, 50);
-    },
-    
-    playDestroy() {
-        this.createNoise(0.5, 0.5, 400);
-        this.createOsc(60, 'sawtooth', 0.4, 0.4);
-        this.createOsc(40, 'square', 0.5, 0.3);
-        
-        setTimeout(() => {
-            this.createNoise(0.3, 0.3, 200);
-        }, 150);
-        
-        setTimeout(() => {
-            this.createOsc(30, 'triangle', 0.4, 0.2);
-        }, 300);
-    },
-    
-    playRespawn() {
-        const notes = [261.63, 329.63, 392.00, 523.25];
-        notes.forEach((freq, i) => {
-            setTimeout(() => {
-                this.createOsc(freq, 'sine', 0.2, 0.2);
-            }, i * 80);
-        });
-    },
-    
-    playDot() {
-        this.createOsc(200, 'sine', 0.08, 0.1);
-        this.createNoise(0.05, 0.1, 500);
+    playUI() {
+        this.createOsc(600, 'sine', 0.08, 0.15);
     }
 };
 
-// ========================================
+// ============================================
 // PARTICLE SYSTEM
-// Canvas-based particle effects
-// ========================================
-const ParticleSystem = {
-    canvas: null,
-    ctx: null,
-    particles: [],
-    animationId: null,
+// ============================================
+class ParticleSystem {
+    constructor(canvas, ctx) {
+        this.canvas = canvas;
+        this.ctx = ctx;
+        this.particles = [];
+    }
     
-    /**
-     * Initialize particle system
-     */
-    init() {
-        this.canvas = document.getElementById('particle-canvas');
-        this.ctx = this.canvas.getContext('2d');
-        this.resize();
-        window.addEventListener('resize', () => this.resize());
-        this.animate();
-    },
-    
-    /**
-     * Resize canvas
-     */
-    resize() {
-        this.canvas.width = window.innerWidth;
-        this.canvas.height = window.innerHeight;
-    },
-    
-    /**
-     * Add particle
-     */
-    addParticle(particle) {
+    add(particle) {
         this.particles.push(particle);
-    },
+    }
     
-    /**
-     * Create spark particles
-     */
-    createSparks(x, y, count = 10, colors = ['#00d4ff', '#ff3366', '#ffffff', '#ffa94d']) {
+    createSparks(x, y, count = 10, colors = ['#ff3366', '#00d4ff', '#fff']) {
         for (let i = 0; i < count; i++) {
             const angle = Math.random() * Math.PI * 2;
-            const speed = Utils.random(3, 8);
-            
-            this.addParticle({
+            const speed = Utils.random(2, 8);
+            this.add({
                 x, y,
                 vx: Math.cos(angle) * speed,
                 vy: Math.sin(angle) * speed,
@@ -811,1723 +257,1212 @@ const ParticleSystem = {
                 color: colors[Math.floor(Math.random() * colors.length)],
                 alpha: 1,
                 decay: Utils.random(0.02, 0.04),
-                gravity: 0.1,
-                type: 'spark'
+                gravity: 0.15
             });
         }
-    },
+    }
     
-    /**
-     * Create smoke particles
-     */
-    createSmoke(x, y, count = 8) {
+    createImpact(x, y, intensity = 1) {
+        const count = Math.floor(8 + intensity * 12);
         for (let i = 0; i < count; i++) {
             const angle = Math.random() * Math.PI * 2;
-            const speed = Utils.random(0.5, 2);
-            
-            this.addParticle({
-                x: x + Utils.random(-10, 10),
-                y: y + Utils.random(-10, 10),
-                vx: Math.cos(angle) * speed,
-                vy: Math.sin(angle) * speed - 1,
-                size: Utils.random(10, 25),
-                color: '#555555',
-                alpha: 0.6,
-                decay: 0.01,
-                gravity: -0.05,
-                type: 'smoke'
-            });
-        }
-    },
-    
-    /**
-     * Create fire particles
-     */
-    createFire(x, y, count = 15) {
-        const colors = ['#ff6600', '#ff3300', '#ffcc00', '#ff0000'];
-        
-        for (let i = 0; i < count; i++) {
-            const angle = Utils.random(-0.8, 0.8) - Math.PI / 2;
-            const speed = Utils.random(2, 5);
-            
-            this.addParticle({
-                x: x + Utils.random(-15, 15),
-                y,
-                vx: Math.cos(angle) * speed * 0.5,
-                vy: Math.sin(angle) * speed,
-                size: Utils.random(5, 12),
-                color: colors[Math.floor(Math.random() * colors.length)],
-                alpha: 1,
-                decay: Utils.random(0.03, 0.05),
-                gravity: -0.15,
-                type: 'fire'
-            });
-        }
-    },
-    
-    /**
-     * Create explosion particles
-     */
-    createExplosion(x, y, count = 30, color = '#ff4444') {
-        // Core explosion
-        for (let i = 0; i < count; i++) {
-            const angle = (Math.PI * 2 * i) / count + Utils.random(-0.2, 0.2);
-            const speed = Utils.random(4, 10);
-            
-            this.addParticle({
+            const speed = Utils.random(1, 5) * intensity;
+            this.add({
                 x, y,
                 vx: Math.cos(angle) * speed,
                 vy: Math.sin(angle) * speed,
-                size: Utils.random(4, 10),
-                color,
+                size: Utils.random(2, 6),
+                color: `hsl(${Utils.random(0, 30)}, 100%, ${Utils.random(50, 70)}%)`,
                 alpha: 1,
                 decay: Utils.random(0.015, 0.03),
-                gravity: 0.1,
-                type: 'explosion'
+                gravity: 0.1
             });
         }
-        
-        // Add debris
-        for (let i = 0; i < count / 2; i++) {
-            const angle = Math.random() * Math.PI * 2;
-            const speed = Utils.random(2, 6);
-            
-            this.addParticle({
+    }
+    
+    createExplosion(x, y) {
+        for (let i = 0; i < 40; i++) {
+            const angle = (Math.PI * 2 * i) / 40 + Utils.random(-0.2, 0.2);
+            const speed = Utils.random(3, 12);
+            this.add({
                 x, y,
                 vx: Math.cos(angle) * speed,
                 vy: Math.sin(angle) * speed,
-                size: Utils.random(2, 5),
-                color: '#333333',
+                size: Utils.random(3, 8),
+                color: `hsl(${Utils.random(10, 50)}, 100%, ${Utils.random(50, 70)}%)`,
                 alpha: 1,
-                decay: 0.02,
-                gravity: 0.2,
-                type: 'debris'
+                decay: Utils.random(0.01, 0.025),
+                gravity: 0.08
             });
         }
-    },
-    
-    /**
-     * Create shockwave ring
-     */
-    createShockwave(x, y) {
-        this.addParticle({
-            x, y,
-            vx: 0,
-            vy: 0,
-            size: 10,
-            maxSize: 200,
-            color: '#ffffff',
-            alpha: 0.8,
-            decay: 0.04,
-            gravity: 0,
-            type: 'shockwave',
-            expansion: 8
+        // Add shockwave ring
+        this.add({
+            x, y, vx: 0, vy: 0,
+            size: 10, maxSize: 150,
+            color: '#fff', alpha: 0.6,
+            decay: 0.03, gravity: 0,
+            type: 'ring', expansion: 8
         });
-    },
+    }
     
-    /**
-     * Create electric arc particles
-     */
-    createElectricArc(x1, y1, x2, y2, segments = 8) {
-        const dx = x2 - x1;
-        const dy = y2 - y1;
-        
-        for (let i = 0; i < segments; i++) {
-            const t = i / segments;
-            const x = x1 + dx * t + Utils.random(-20, 20);
-            const y = y1 + dy * t + Utils.random(-20, 20);
-            
-            this.addParticle({
+    createFreeze(x, y) {
+        for (let i = 0; i < 20; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const speed = Utils.random(1, 4);
+            this.add({
+                x: x + Utils.random(-30, 30),
+                y: y + Utils.random(-30, 30),
+                vx: Math.cos(angle) * speed * 0.3,
+                vy: Math.sin(angle) * speed * 0.3 - 1,
+                size: Utils.random(3, 8),
+                color: `hsl(200, ${Utils.random(70, 100)}%, ${Utils.random(70, 90)}%)`,
+                alpha: 1,
+                decay: 0.015,
+                gravity: -0.02
+            });
+        }
+    }
+    
+    createFire(x, y) {
+        for (let i = 0; i < 15; i++) {
+            const angle = Utils.random(-0.6, 0.6) - Math.PI / 2;
+            const speed = Utils.random(2, 5);
+            this.add({
+                x: x + Utils.random(-15, 15), y,
+                vx: Math.cos(angle) * speed * 0.4,
+                vy: Math.sin(angle) * speed,
+                size: Utils.random(4, 10),
+                color: `hsl(${Utils.random(15, 45)}, 100%, ${Utils.random(50, 70)}%)`,
+                alpha: 1,
+                decay: Utils.random(0.025, 0.04),
+                gravity: -0.1
+            });
+        }
+    }
+    
+    createBreak(x, y, avatarUrl) {
+        // Debris particles
+        for (let i = 0; i < 30; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const speed = Utils.random(5, 15);
+            this.add({
                 x, y,
-                vx: Utils.random(-2, 2),
-                vy: Utils.random(-2, 2),
-                size: Utils.random(2, 6),
-                color: '#00d4ff',
+                vx: Math.cos(angle) * speed,
+                vy: Math.sin(angle) * speed - 5,
+                size: Utils.random(5, 15),
+                color: '#444',
                 alpha: 1,
-                decay: 0.08,
-                gravity: 0,
-                type: 'electric',
-                glow: true
+                decay: 0.008,
+                gravity: 0.3,
+                rotation: Utils.random(0, 360),
+                rotationSpeed: Utils.random(-10, 10)
             });
         }
-    },
+    }
     
-    /**
-     * Create bullet trail
-     */
-    createBulletTrail(x, y) {
-        for (let i = 0; i < 5; i++) {
-            this.addParticle({
-                x: x + Utils.random(-5, 5),
-                y: y + Utils.random(-5, 5),
-                vx: Utils.random(-1, 1),
-                vy: Utils.random(-1, 1),
-                size: Utils.random(1, 3),
-                color: '#ffcc00',
-                alpha: 1,
-                decay: 0.1,
-                gravity: 0,
-                type: 'bullet'
-            });
-        }
-    },
-    
-    /**
-     * Animation loop
-     */
-    animate() {
-        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-        
+    update() {
         this.particles = this.particles.filter(p => {
-            // Update position
             p.x += p.vx;
             p.y += p.vy;
             p.vy += p.gravity || 0;
             p.alpha -= p.decay;
             
-            // Special handling for shockwave
-            if (p.type === 'shockwave') {
+            if (p.type === 'ring') {
                 p.size += p.expansion;
                 if (p.size > p.maxSize) p.alpha = 0;
+            } else {
+                p.size *= 0.97;
             }
             
-            // Draw particle
-            if (p.alpha > 0) {
-                this.ctx.save();
-                this.ctx.globalAlpha = p.alpha;
-                
-                if (p.type === 'shockwave') {
-                    // Draw ring
-                    this.ctx.strokeStyle = p.color;
-                    this.ctx.lineWidth = 3;
-                    this.ctx.beginPath();
-                    this.ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-                    this.ctx.stroke();
-                } else if (p.type === 'smoke') {
-                    // Draw soft smoke
-                    const gradient = this.ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.size);
-                    gradient.addColorStop(0, p.color);
-                    gradient.addColorStop(1, 'transparent');
-                    this.ctx.fillStyle = gradient;
-                    this.ctx.beginPath();
-                    this.ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-                    this.ctx.fill();
-                } else if (p.glow) {
-                    // Draw glowing particle
-                    this.ctx.shadowBlur = 15;
-                    this.ctx.shadowColor = p.color;
+            if (p.rotation !== undefined) {
+                p.rotation += p.rotationSpeed;
+            }
+            
+            return p.alpha > 0 && p.size > 0.5;
+        });
+    }
+    
+    render() {
+        this.particles.forEach(p => {
+            this.ctx.save();
+            this.ctx.globalAlpha = p.alpha;
+            
+            if (p.type === 'ring') {
+                this.ctx.strokeStyle = p.color;
+                this.ctx.lineWidth = 3;
+                this.ctx.beginPath();
+                this.ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+                this.ctx.stroke();
+            } else {
+                if (p.rotation !== undefined) {
+                    this.ctx.translate(p.x, p.y);
+                    this.ctx.rotate(p.rotation * Math.PI / 180);
                     this.ctx.fillStyle = p.color;
-                    this.ctx.beginPath();
-                    this.ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-                    this.ctx.fill();
-                    this.ctx.shadowBlur = 0;
+                    this.ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size);
                 } else {
-                    // Draw normal particle
                     this.ctx.fillStyle = p.color;
                     this.ctx.beginPath();
                     this.ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
                     this.ctx.fill();
                 }
-                
-                this.ctx.restore();
-                
-                // Shrink non-smoke particles
-                if (p.type !== 'smoke' && p.type !== 'shockwave') {
-                    p.size *= 0.97;
-                }
-                
-                return p.alpha > 0 && p.size > 0.5;
             }
             
-            return false;
+            this.ctx.restore();
+        });
+    }
+}
+
+// ============================================
+// DUMMY CLASS (Physics Body with Roblox Avatar)
+// ============================================
+class Dummy {
+    constructor(x, y, username, displayName, avatarUrl) {
+        // Identity
+        this.username = username;
+        this.displayName = displayName;
+        this.avatarUrl = avatarUrl;
+        this.avatarLoaded = false;
+        this.avatarImage = null;
+        
+        // Position & Physics
+        this.x = x;
+        this.y = y;
+        this.vx = 0;
+        this.vy = 0;
+        this.radius = CONFIG.dummyRadius;
+        this.rotation = 0;
+        this.angularVel = 0;
+        
+        // State
+        this.hp = CONFIG.dummyMaxHP;
+        this.maxHP = CONFIG.dummyMaxHP;
+        this.isDestroyed = false;
+        this.isFrozen = false;
+        this.freezeTimer = 0;
+        this.isDragging = false;
+        this.dotActive = false;
+        this.dotTimer = 0;
+        
+        // Visual
+        this.crackStage = 0;
+        this.flashTimer = 0;
+        this.flashColor = null;
+        
+        // Load avatar
+        this.loadAvatar();
+    }
+    
+    loadAvatar() {
+        if (!this.avatarUrl) return;
+        
+        this.avatarImage = new Image();
+        this.avatarImage.crossOrigin = 'anonymous';
+        this.avatarImage.onload = () => {
+            this.avatarLoaded = true;
+        };
+        this.avatarImage.src = this.avatarUrl;
+    }
+    
+    get speed() {
+        return Math.sqrt(this.vx ** 2 + this.vy ** 2);
+    }
+    
+    get hpPercent() {
+        return (this.hp / this.maxHP) * 100;
+    }
+    
+    applyForce(fx, fy) {
+        if (this.isFrozen) return;
+        this.vx += fx;
+        this.vy += fy;
+    }
+    
+    applyDamage(amount, particles, flashColor = 'red') {
+        if (this.isDestroyed) return 0;
+        
+        const actualDamage = Math.min(amount, this.hp);
+        this.hp -= actualDamage;
+        
+        // Flash effect
+        this.flashTimer = 10;
+        this.flashColor = flashColor;
+        
+        // Check crack stage
+        const oldStage = this.crackStage;
+        for (let i = 0; i < CONFIG.crackStages.length; i++) {
+            if (this.hpPercent <= CONFIG.crackStages[i]) {
+                this.crackStage = i + 1;
+            }
+        }
+        
+        // Play crack sound if stage increased
+        if (this.crackStage > oldStage) {
+            SoundSystem.play('crack');
+        }
+        
+        // Check destruction
+        if (this.hp <= 0) {
+            this.hp = 0;
+            this.isDestroyed = true;
+            particles.createBreak(this.x, this.y, this.avatarUrl);
+            SoundSystem.play('break');
+        }
+        
+        return actualDamage;
+    }
+    
+    update(arena, particles) {
+        if (this.isDestroyed) return;
+        
+        // Freeze countdown
+        if (this.isFrozen) {
+            this.freezeTimer--;
+            if (this.freezeTimer <= 0) {
+                this.isFrozen = false;
+            }
+        }
+        
+        // DOT damage
+        if (this.dotActive) {
+            this.dotTimer--;
+            if (this.dotTimer % 30 === 0) { // Tick every 30 frames
+                this.applyDamage(15, particles, 'orange');
+                particles.createFire(this.x, this.y - this.radius);
+            }
+            if (this.dotTimer <= 0) {
+                this.dotActive = false;
+            }
+        }
+        
+        // Skip physics if dragging or frozen
+        if (this.isDragging || this.isFrozen) {
+            this.vx = 0;
+            this.vy = 0;
+            return;
+        }
+        
+        // Apply gravity
+        this.vy += CONFIG.gravity;
+        
+        // Apply friction/air resistance
+        this.vx *= CONFIG.airResistance;
+        this.vy *= CONFIG.airResistance;
+        
+        // Update position
+        this.x += this.vx;
+        this.y += this.vy;
+        
+        // Angular velocity
+        this.rotation += this.angularVel;
+        this.angularVel *= 0.95;
+        
+        // Wall collisions
+        this.handleWallCollisions(arena, particles);
+        
+        // Flash timer
+        if (this.flashTimer > 0) {
+            this.flashTimer--;
+        }
+    }
+    
+    handleWallCollisions(arena, particles) {
+        const { width, height } = arena;
+        let impacted = false;
+        let impactSpeed = 0;
+        
+        // Left wall
+        if (this.x - this.radius < 0) {
+            this.x = this.radius;
+            impactSpeed = Math.abs(this.vx);
+            this.vx = -this.vx * CONFIG.bounceFactor;
+            this.angularVel += this.vy * 0.05;
+            impacted = true;
+        }
+        
+        // Right wall
+        if (this.x + this.radius > width) {
+            this.x = width - this.radius;
+            impactSpeed = Math.abs(this.vx);
+            this.vx = -this.vx * CONFIG.bounceFactor;
+            this.angularVel -= this.vy * 0.05;
+            impacted = true;
+        }
+        
+        // Top wall
+        if (this.y - this.radius < 0) {
+            this.y = this.radius;
+            impactSpeed = Math.abs(this.vy);
+            this.vy = -this.vy * CONFIG.bounceFactor;
+            impacted = true;
+        }
+        
+        // Bottom wall (floor)
+        if (this.y + this.radius > height) {
+            this.y = height - this.radius;
+            impactSpeed = Math.abs(this.vy);
+            this.vy = -this.vy * CONFIG.bounceFactor;
+            this.vx *= CONFIG.friction;
+            this.angularVel += this.vx * 0.02;
+            impacted = true;
+        }
+        
+        // Impact damage
+        if (impacted && impactSpeed > CONFIG.minImpactSpeed) {
+            const intensity = Math.min(impactSpeed / 20, 1);
+            const damage = Math.min(
+                impactSpeed * CONFIG.impactDamageMultiplier * intensity * 10,
+                CONFIG.maxImpactDamage
+            );
+            
+            this.applyDamage(Math.floor(damage), particles);
+            particles.createImpact(this.x, this.y, intensity);
+            SoundSystem.play('impact', { intensity });
+            
+            return { impacted: true, intensity };
+        }
+        
+        return { impacted, intensity: 0 };
+    }
+    
+    render(ctx) {
+        if (this.isDestroyed) return;
+        
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.rotate(this.rotation * Math.PI / 180);
+        
+        // Flash effect
+        if (this.flashTimer > 0) {
+            ctx.shadowBlur = 30;
+            ctx.shadowColor = this.flashColor === 'red' ? '#ff3333' : 
+                              this.flashColor === 'blue' ? '#3399ff' : '#ff9933';
+        }
+        
+        // Avatar circle
+        ctx.beginPath();
+        ctx.arc(0, 0, this.radius, 0, Math.PI * 2);
+        ctx.closePath();
+        ctx.clip();
+        
+        // Draw avatar or placeholder
+        if (this.avatarLoaded && this.avatarImage) {
+            ctx.drawImage(
+                this.avatarImage,
+                -this.radius, -this.radius,
+                this.radius * 2, this.radius * 2
+            );
+        } else {
+            // Placeholder gradient
+            const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, this.radius);
+            grad.addColorStop(0, '#4a4a6a');
+            grad.addColorStop(1, '#2a2a4a');
+            ctx.fillStyle = grad;
+            ctx.fill();
+            
+            // Loading text
+            ctx.fillStyle = '#888';
+            ctx.font = 'bold 14px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('Loading...', 0, 0);
+        }
+        
+        // Crack overlay
+        if (this.crackStage > 0) {
+            ctx.globalAlpha = 0.3 + this.crackStage * 0.12;
+            this.drawCracks(ctx, this.crackStage);
+        }
+        
+        // Freeze overlay
+        if (this.isFrozen) {
+            ctx.globalAlpha = 0.5;
+            ctx.fillStyle = 'rgba(150, 220, 255, 0.5)';
+            ctx.fill();
+        }
+        
+        // DOT overlay
+        if (this.dotActive) {
+            ctx.globalAlpha = 0.3 + Math.sin(Date.now() / 100) * 0.1;
+            ctx.fillStyle = 'rgba(255, 100, 50, 0.4)';
+            ctx.fill();
+        }
+        
+        ctx.restore();
+        
+        // Draw HP bar
+        this.drawHPBar(ctx);
+        
+        // Draw username
+        this.drawUsername(ctx);
+    }
+    
+    drawCracks(ctx, stage) {
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.lineWidth = 2;
+        
+        // Generate crack patterns based on stage
+        const patterns = [
+            [[0, -30], [10, 0], [-5, 25]],
+            [[-25, -15], [0, 10], [20, -5]],
+            [[15, -25], [5, 5], [-10, 20], [25, 10]],
+            [[-20, -20], [5, -5], [15, 15], [-15, 25]],
+            [[0, -35], [-20, 0], [20, 0], [0, 35]]
+        ];
+        
+        for (let i = 0; i < Math.min(stage, patterns.length); i++) {
+            ctx.beginPath();
+            const pattern = patterns[i];
+            ctx.moveTo(pattern[0][0], pattern[0][1]);
+            for (let j = 1; j < pattern.length; j++) {
+                ctx.lineTo(pattern[j][0], pattern[j][1]);
+            }
+            ctx.stroke();
+        }
+    }
+    
+    drawHPBar(ctx) {
+        const barWidth = this.radius * 2;
+        const barHeight = 8;
+        const barX = this.x - this.radius;
+        const barY = this.y - this.radius - 15;
+        
+        // Background
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+        ctx.beginPath();
+        ctx.roundRect(barX, barY, barWidth, barHeight, 4);
+        ctx.fill();
+        
+        // HP fill
+        const hpWidth = (this.hp / this.maxHP) * (barWidth - 4);
+        const hpColor = this.hpPercent > 50 ? '#22c55e' : 
+                        this.hpPercent > 25 ? '#f59e0b' : '#ef4444';
+        
+        ctx.fillStyle = hpColor;
+        ctx.beginPath();
+        ctx.roundRect(barX + 2, barY + 2, hpWidth, barHeight - 4, 2);
+        ctx.fill();
+        
+        // HP text
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 8px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(`${Math.ceil(this.hp)}`, this.x, barY + barHeight / 2);
+    }
+    
+    drawUsername(ctx) {
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
+        ctx.shadowBlur = 4;
+        ctx.fillText(this.displayName || this.username, this.x, this.y + this.radius + 8);
+        ctx.shadowBlur = 0;
+    }
+    
+    containsPoint(px, py) {
+        return Utils.distance(this.x, this.y, px, py) <= this.radius;
+    }
+    
+    freeze(duration = 180) { // 3 seconds at 60fps
+        this.isFrozen = true;
+        this.freezeTimer = duration;
+        this.vx = 0;
+        this.vy = 0;
+    }
+    
+    applyDOT(duration = 300) { // 5 seconds
+        this.dotActive = true;
+        this.dotTimer = duration;
+    }
+    
+    respawn(x, y) {
+        this.x = x;
+        this.y = y;
+        this.vx = 0;
+        this.vy = 0;
+        this.hp = this.maxHP;
+        this.isDestroyed = false;
+        this.isFrozen = false;
+        this.dotActive = false;
+        this.crackStage = 0;
+        this.rotation = 0;
+        this.angularVel = 0;
+    }
+}
+
+// ============================================
+// ROBLOX API SERVICE
+// ============================================
+const RobloxAPI = {
+    cache: new Map(),
+    
+    buildUrl(url) {
+        return CONFIG.corsProxy + encodeURIComponent(url);
+    },
+    
+    async fetchWithRetry(url, options = {}, retries = 0) {
+        try {
+            const response = await fetch(url, options);
+            
+            if (response.status === 429) {
+                if (retries < CONFIG.maxRetries) {
+                    const delay = CONFIG.retryDelay * Math.pow(2, retries);
+                    console.warn(`Rate limited. Retrying in ${delay}ms...`);
+                    await Utils.sleep(delay);
+                    return this.fetchWithRetry(url, options, retries + 1);
+                }
+                throw new Error('Rate limited. Please try again later.');
+            }
+            
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            
+            return response;
+        } catch (error) {
+            if (retries < CONFIG.maxRetries) {
+                await Utils.sleep(CONFIG.retryDelay);
+                return this.fetchWithRetry(url, options, retries + 1);
+            }
+            throw error;
+        }
+    },
+    
+    async getUserId(username) {
+        const cacheKey = `id_${username.toLowerCase()}`;
+        if (this.cache.has(cacheKey)) return this.cache.get(cacheKey);
+        
+        const url = this.buildUrl(CONFIG.robloxUserAPI);
+        const response = await this.fetchWithRetry(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ usernames: [username], excludeBannedUsers: false })
         });
         
-        this.animationId = requestAnimationFrame(() => this.animate());
-    }
-};
-
-// ========================================
-// SCREEN EFFECTS
-// Global visual effects
-// ========================================
-const ScreenEffects = {
-    elements: {},
-    
-    /**
-     * Initialize screen effects
-     */
-    init() {
-        this.elements = {
-            flash: document.getElementById('screen-flash'),
-            electric: document.getElementById('electric-overlay'),
-            heat: document.getElementById('heat-overlay'),
-            wrapper: document.querySelector('.app-wrapper')
-        };
-    },
-    
-    /**
-     * Flash screen
-     */
-    flash(color = 'red') {
-        const el = this.elements.flash;
-        el.className = 'screen-flash';
-        void el.offsetWidth; // Force reflow
-        el.classList.add(color);
-        
-        setTimeout(() => {
-            el.className = 'screen-flash';
-        }, 300);
-    },
-    
-    /**
-     * Shake screen
-     */
-    shake(intensity = 'light') {
-        const el = this.elements.wrapper;
-        el.classList.remove('screen-shake-light', 'screen-shake-heavy');
-        void el.offsetWidth;
-        
-        if (intensity === 'heavy') {
-            el.classList.add('screen-shake-heavy');
-            setTimeout(() => el.classList.remove('screen-shake-heavy'), 500);
-        } else {
-            el.classList.add('screen-shake-light');
-            setTimeout(() => el.classList.remove('screen-shake-light'), 300);
-        }
-    },
-    
-    /**
-     * Electric flicker effect
-     */
-    electricFlicker() {
-        const el = this.elements.electric;
-        el.classList.remove('active');
-        void el.offsetWidth;
-        el.classList.add('active');
-        
-        setTimeout(() => {
-            el.classList.remove('active');
-        }, 400);
-    },
-    
-    /**
-     * Heat distortion effect
-     */
-    heatDistortion(x, y) {
-        const el = this.elements.heat;
-        el.style.setProperty('--heat-x', `${(x / window.innerWidth) * 100}%`);
-        el.style.setProperty('--heat-y', `${(y / window.innerHeight) * 100}%`);
-        
-        el.classList.remove('active');
-        void el.offsetWidth;
-        el.classList.add('active');
-        
-        setTimeout(() => {
-            el.classList.remove('active');
-        }, 500);
-    }
-};
-
-// ========================================
-// PROFILE STORE
-// State management for profiles
-// ========================================
-const ProfileStore = {
-    profiles: [],
-    nextLocalId: 1,
-    stats: {
-        destroyed: 0,
-        totalDamage: 0,
-        totalHits: 0
-    },
-    activeDOTs: new Map(), // Track active DOT effects
-    
-    /**
-     * Add a profile
-     */
-    add(profileData) {
-        const profile = {
-            localId: this.nextLocalId++,
-            id: profileData.id,
-            name: profileData.name,
-            displayName: profileData.displayName,
-            avatarUrl: profileData.avatarUrl,
-            health: CONFIG.defaultHealth,
-            maxHealth: CONFIG.maxHealth,
-            isDestroyed: false,
-            bulletHoles: [],
-            createdAt: Date.now()
-        };
-        
-        this.profiles.push(profile);
-        this.save();
-        return profile;
-    },
-    
-    /**
-     * Remove a profile
-     */
-    remove(localId) {
-        // Clear any active DOTs
-        this.clearDOT(localId);
-        
-        const index = this.profiles.findIndex(p => p.localId === localId);
-        if (index !== -1) {
-            this.profiles.splice(index, 1);
-            this.save();
-            return true;
-        }
-        return false;
-    },
-    
-    /**
-     * Get profile by local ID
-     */
-    get(localId) {
-        return this.profiles.find(p => p.localId === localId) || null;
-    },
-    
-    /**
-     * Get all profiles
-     */
-    getAll() {
-        return [...this.profiles];
-    },
-    
-    /**
-     * Get all alive profiles
-     */
-    getAlive() {
-        return this.profiles.filter(p => !p.isDestroyed);
-    },
-    
-    /**
-     * Count profiles
-     */
-    count() {
-        return this.profiles.length;
-    },
-    
-    /**
-     * Apply damage
-     */
-    applyDamage(localId, damage) {
-        const profile = this.get(localId);
-        if (profile && !profile.isDestroyed) {
-            profile.health = Math.max(0, profile.health - damage);
-            this.stats.totalDamage += damage;
-            this.stats.totalHits++;
-            
-            if (profile.health <= 0) {
-                profile.isDestroyed = true;
-                profile.health = 0;
-                this.stats.destroyed++;
-                this.clearDOT(localId);
-            }
-            
-            this.save();
-            return profile;
+        const data = await response.json();
+        if (data.data && data.data.length > 0) {
+            const userId = data.data[0].id;
+            this.cache.set(cacheKey, userId);
+            return userId;
         }
         return null;
     },
     
-    /**
-     * Apply DOT effect
-     */
-    applyDOT(localId, dotConfig) {
-        // Clear existing DOT of same type
-        this.clearDOT(localId);
+    async getUserInfo(userId) {
+        const cacheKey = `info_${userId}`;
+        if (this.cache.has(cacheKey)) return this.cache.get(cacheKey);
         
-        const profile = this.get(localId);
-        if (!profile || profile.isDestroyed) return;
+        const url = this.buildUrl(`${CONFIG.robloxUserInfoAPI}${userId}`);
+        const response = await this.fetchWithRetry(url);
+        const data = await response.json();
         
-        let ticksRemaining = dotConfig.ticks;
-        
-        const dotInterval = setInterval(() => {
-            const p = this.get(localId);
-            if (!p || p.isDestroyed || ticksRemaining <= 0) {
-                this.clearDOT(localId);
-                return;
-            }
-            
-            // Apply tick damage
-            this.applyDamage(localId, dotConfig.damage);
-            UIRenderer.showDamageText(localId, dotConfig.damage, false, null, null, 'dot fire');
-            UIRenderer.updateProfileCard(this.get(localId));
-            SoundSystem.play('dot');
-            
-            ticksRemaining--;
-            
-            if (ticksRemaining <= 0) {
-                this.clearDOT(localId);
-                UIRenderer.removeEffect(localId, 'burning');
-            }
-        }, CONFIG.dotTickInterval);
-        
-        this.activeDOTs.set(localId, dotInterval);
+        this.cache.set(cacheKey, data);
+        return data;
     },
     
-    /**
-     * Clear DOT effect
-     */
-    clearDOT(localId) {
-        if (this.activeDOTs.has(localId)) {
-            clearInterval(this.activeDOTs.get(localId));
-            this.activeDOTs.delete(localId);
-        }
-    },
-    
-    /**
-     * Add bullet hole to profile
-     */
-    addBulletHole(localId, x, y) {
-        const profile = this.get(localId);
-        if (profile) {
-            profile.bulletHoles.push({ x, y });
-            // Keep max 10 bullet holes
-            if (profile.bulletHoles.length > 10) {
-                profile.bulletHoles.shift();
-            }
-        }
-    },
-    
-    /**
-     * Respawn a profile
-     */
-    respawn(localId) {
-        const profile = this.get(localId);
-        if (profile) {
-            profile.health = profile.maxHealth;
-            profile.isDestroyed = false;
-            profile.bulletHoles = [];
-            this.clearDOT(localId);
-            this.save();
-            return profile;
+    async getAvatarUrl(userId) {
+        const cacheKey = `avatar_${userId}`;
+        if (this.cache.has(cacheKey)) return this.cache.get(cacheKey);
+        
+        const params = new URLSearchParams({
+            userIds: userId,
+            size: '420x420',
+            format: 'Png'
+        });
+        
+        const url = this.buildUrl(`${CONFIG.robloxAvatarAPI}?${params}`);
+        const response = await this.fetchWithRetry(url);
+        const data = await response.json();
+        
+        if (data.data && data.data.length > 0) {
+            const avatarUrl = data.data[0].imageUrl;
+            this.cache.set(cacheKey, avatarUrl);
+            return avatarUrl;
         }
         return null;
     },
     
-    /**
-     * Respawn all profiles
-     */
-    respawnAll() {
-        this.profiles.forEach(p => {
-            p.health = p.maxHealth;
-            p.isDestroyed = false;
-            p.bulletHoles = [];
-            this.clearDOT(p.localId);
-        });
-        this.save();
-    },
-    
-    /**
-     * Clear all profiles
-     */
-    clear() {
-        // Clear all DOTs
-        this.activeDOTs.forEach((interval) => clearInterval(interval));
-        this.activeDOTs.clear();
+    async loadProfile(username) {
+        const userId = await this.getUserId(username);
+        if (!userId) throw new Error(`User "${username}" not found`);
         
-        this.profiles = [];
-        this.stats = { destroyed: 0, totalDamage: 0, totalHits: 0 };
-        this.save();
-    },
-    
-    /**
-     * Check if username exists
-     */
-    hasUsername(username) {
-        return this.profiles.some(
-            p => p.name.toLowerCase() === username.toLowerCase()
-        );
-    },
-    
-    /**
-     * Save to localStorage
-     */
-    save() {
-        try {
-            localStorage.setItem('roblox_profiles_v2', JSON.stringify(this.profiles));
-            localStorage.setItem('roblox_nextId_v2', this.nextLocalId.toString());
-            localStorage.setItem('roblox_stats_v2', JSON.stringify(this.stats));
-        } catch (e) {
-            console.warn('Could not save to localStorage:', e);
-        }
-    },
-    
-    /**
-     * Load from localStorage
-     */
-    load() {
-        try {
-            const profiles = localStorage.getItem('roblox_profiles_v2');
-            const nextId = localStorage.getItem('roblox_nextId_v2');
-            const stats = localStorage.getItem('roblox_stats_v2');
-            
-            if (profiles) this.profiles = JSON.parse(profiles);
-            if (nextId) this.nextLocalId = parseInt(nextId, 10);
-            if (stats) this.stats = JSON.parse(stats);
-        } catch (e) {
-            console.warn('Could not load from localStorage:', e);
-        }
+        const userInfo = await this.getUserInfo(userId);
+        await Utils.sleep(200);
+        const avatarUrl = await this.getAvatarUrl(userId);
+        
+        return {
+            id: userId,
+            username: userInfo.name,
+            displayName: userInfo.displayName,
+            avatarUrl
+        };
     }
 };
 
-// ========================================
-// UI RENDERER
-// DOM manipulation and rendering
-// ========================================
-const UIRenderer = {
-    elements: {},
+// ============================================
+// TOOLS DEFINITIONS
+// ============================================
+const TOOLS = {
+    hand: {
+        name: 'Hand',
+        description: 'Drag and throw',
+        cursor: 'grab',
+        canDrag: true
+    },
+    tap: {
+        name: 'Tap',
+        description: 'Direct damage',
+        cursor: 'pointer',
+        damage: 25,
+        sound: 'hit'
+    },
+    hammer: {
+        name: 'Hammer',
+        description: 'Heavy hit',
+        cursor: 'crosshair',
+        damage: 150,
+        force: 20,
+        sound: 'hammer',
+        shake: 'medium'
+    },
+    push: {
+        name: 'Push',
+        description: 'Push force',
+        cursor: 'pointer',
+        force: 18,
+        damage: 30,
+        sound: 'push'
+    },
+    explosion: {
+        name: 'Explosion',
+        description: 'Area damage',
+        cursor: 'crosshair',
+        damage: 400,
+        radius: 150,
+        force: 25,
+        sound: 'explosion',
+        shake: 'heavy'
+    },
+    freeze: {
+        name: 'Freeze',
+        description: 'Stop movement',
+        cursor: 'pointer',
+        duration: 180,
+        sound: 'freeze'
+    },
+    dot: {
+        name: 'Fire',
+        description: 'Burn damage',
+        cursor: 'pointer',
+        duration: 300,
+        sound: 'fire'
+    }
+};
+
+// ============================================
+// GAME CLASS
+// ============================================
+class Game {
+    constructor() {
+        // DOM elements
+        this.canvas = document.getElementById('game-canvas');
+        this.ctx = this.canvas.getContext('2d');
+        this.arena = document.getElementById('game-arena');
+        this.emptyState = document.getElementById('arena-empty');
+        
+        // Systems
+        this.particles = new ParticleSystem(this.canvas, this.ctx);
+        
+        // State
+        this.dummies = [];
+        this.currentTool = 'hand';
+        this.isDragging = false;
+        this.dragTarget = null;
+        this.dragOffsetX = 0;
+        this.dragOffsetY = 0;
+        this.lastDragX = 0;
+        this.lastDragY = 0;
+        this.dragVelX = 0;
+        this.dragVelY = 0;
+        
+        // Stats
+        this.stats = {
+            totalDamage: 0,
+            destroyed: 0
+        };
+        
+        // Initialize
+        this.init();
+    }
     
-    /**
-     * Initialize UI
-     */
     init() {
-        this.elements = {
-            input: document.getElementById('username-input'),
-            addBtn: document.getElementById('add-profile-btn'),
-            status: document.getElementById('status-message'),
-            container: document.getElementById('profiles-container'),
-            profileCount: document.getElementById('profile-count'),
-            destroyedCount: document.getElementById('destroyed-count'),
-            totalDamage: document.getElementById('total-damage'),
-            totalHits: document.getElementById('total-hits'),
-            clearBtn: document.getElementById('clear-all-btn'),
-            respawnAllBtn: document.getElementById('respawn-all-btn'),
-            toolsList: document.getElementById('tools-list'),
-            selectedToolDisplay: document.getElementById('selected-tool-display'),
-            soundToggle: document.getElementById('sound-toggle'),
-            sidebar: document.getElementById('sidebar'),
-            sidebarToggle: document.getElementById('sidebar-toggle'),
-            mobileToolToggle: document.getElementById('mobile-tool-toggle')
-        };
-    },
-    
-    /**
-     * Set status message
-     */
-    setStatus(message, type = '') {
-        this.elements.status.textContent = message;
-        this.elements.status.className = `status-message ${type}`;
-    },
-    
-    /**
-     * Update stats display
-     */
-    updateStats() {
-        this.elements.profileCount.textContent = ProfileStore.count();
-        this.elements.destroyedCount.textContent = ProfileStore.stats.destroyed;
-        this.elements.totalDamage.textContent = ProfileStore.stats.totalDamage;
-        this.elements.totalHits.textContent = ProfileStore.stats.totalHits;
-    },
-    
-    /**
-     * Set loading state
-     */
-    setLoading(isLoading) {
-        this.elements.addBtn.disabled = isLoading;
-        this.elements.input.disabled = isLoading;
+        this.setupCanvas();
+        this.bindEvents();
+        this.gameLoop();
         
-        const btnText = this.elements.addBtn.querySelector('.btn-text');
-        const btnIcon = this.elements.addBtn.querySelector('.btn-icon');
-        
-        if (isLoading) {
-            btnText.textContent = 'Loading...';
-            btnIcon.innerHTML = '<span class="loading-spinner"></span>';
-        } else {
-            btnText.textContent = 'Add Dummy';
-            btnIcon.textContent = '+';
-        }
-    },
-    
-    /**
-     * Render tools in sidebar
-     */
-    renderTools() {
-        const categories = {
-            melee: { name: 'Melee', icon: '⚔️' },
-            ranged: { name: 'Ranged', icon: '🎯' },
-            explosive: { name: 'Explosive', icon: '💥' },
-            elemental: { name: 'Elemental', icon: '✨' }
-        };
-        
-        let html = '';
-        
-        for (const [catId, catInfo] of Object.entries(categories)) {
-            const tools = ToolsRegistry.getByCategory(catId);
-            if (tools.length === 0) continue;
-            
-            html += `
-                <div class="tool-category">
-                    <div class="tool-category-title">${catInfo.icon} ${catInfo.name}</div>
-                    ${tools.map(tool => this.renderToolItem(tool)).join('')}
-                </div>
-            `;
-        }
-        
-        this.elements.toolsList.innerHTML = html;
-        
-        // Add click listeners
-        this.elements.toolsList.querySelectorAll('.tool-item').forEach(item => {
-            item.addEventListener('click', () => {
-                const toolId = item.dataset.toolId;
-                ToolsRegistry.select(toolId);
-                this.updateToolSelection();
-            });
-        });
-        
-        this.updateToolSelection();
-    },
-    
-    /**
-     * Render single tool item
-     */
-    renderToolItem(tool) {
-        const selected = ToolsRegistry.getSelected();
-        const isSelected = selected && selected.id === tool.id;
-        
-        return `
-            <div class="tool-item ${isSelected ? 'selected' : ''}" 
-                 data-tool-id="${tool.id}"
-                 style="--tool-color: ${tool.color}; --tool-rgb: ${tool.colorRgb}">
-                <div class="tool-icon-wrapper">
-                    <span class="tool-icon">${tool.icon}</span>
-                </div>
-                <div class="tool-info">
-                    <div class="tool-name">${tool.name}</div>
-                    <div class="tool-stats">
-                        <span class="tool-stat damage">💥 ${tool.damage}</span>
-                        <span class="tool-stat special">${tool.description}</span>
-                    </div>
-                </div>
-            </div>
-        `;
-    },
-    
-    /**
-     * Update tool selection in UI
-     */
-    updateToolSelection() {
-        const tool = ToolsRegistry.getSelected();
-        
-        // Update tool items
-        this.elements.toolsList.querySelectorAll('.tool-item').forEach(item => {
-            item.classList.toggle('selected', item.dataset.toolId === tool?.id);
-        });
-        
-        // Update selected tool display
-        if (tool) {
-            this.elements.selectedToolDisplay.innerHTML = `
-                <span class="selected-icon">${tool.icon}</span>
-                <div class="selected-info">
-                    <span class="selected-name">${tool.name}</span>
-                    <span class="selected-damage">${tool.damage} DMG</span>
-                </div>
-            `;
-        }
-    },
-    
-    /**
-     * Get health level class
-     */
-    getHealthLevel(health, maxHealth) {
-        const percent = (health / maxHealth) * 100;
-        if (percent > 50) return 'high';
-        if (percent > 25) return 'mid';
-        return 'low';
-    },
-    
-    /**
-     * Get crack level
-     */
-    getCrackLevel(health, maxHealth) {
-        const percent = (health / maxHealth) * 100;
-        if (percent < CONFIG.crackThresholds.crack3) return 3;
-        if (percent < CONFIG.crackThresholds.crack2) return 2;
-        if (percent < CONFIG.crackThresholds.crack1) return 1;
-        return 0;
-    },
-    
-    /**
-     * Create profile card HTML
-     */
-    createProfileCard(profile) {
-        const healthPercent = (profile.health / profile.maxHealth) * 100;
-        const healthLevel = this.getHealthLevel(profile.health, profile.maxHealth);
-        const crackLevel = this.getCrackLevel(profile.health, profile.maxHealth);
-        
-        return `
-            <article class="profile-card ${profile.isDestroyed ? 'destroyed' : ''} spawning"
-                     id="profile-${profile.localId}"
-                     data-local-id="${profile.localId}">
-                <button class="remove-btn" aria-label="Remove">×</button>
-                <span class="profile-badge">#${profile.id}</span>
-                
-                <div class="avatar-wrapper" id="avatar-wrapper-${profile.localId}">
-                    ${profile.avatarUrl
-                        ? `<img class="avatar-image ${healthLevel === 'low' ? 'critical' : healthLevel === 'mid' ? 'damaged' : ''}"
-                               src="${profile.avatarUrl}"
-                               alt="${profile.displayName}"
-                               id="avatar-${profile.localId}"
-                               draggable="false">`
-                        : `<div class="avatar-placeholder">?</div>`
-                    }
-                    
-                    <!-- Crack Overlays -->
-                    <div class="crack-overlay crack-1 ${crackLevel >= 1 ? 'visible' : ''}" id="crack1-${profile.localId}"></div>
-                    <div class="crack-overlay crack-2 ${crackLevel >= 2 ? 'visible' : ''}" id="crack2-${profile.localId}"></div>
-                    <div class="crack-overlay crack-3 ${crackLevel >= 3 ? 'visible' : ''}" id="crack3-${profile.localId}"></div>
-                    
-                    <!-- Effect Overlays -->
-                    <div class="effect-overlay burn" id="effect-burn-${profile.localId}"></div>
-                    <div class="effect-overlay burning" id="effect-burning-${profile.localId}"></div>
-                    <div class="effect-overlay electric" id="effect-electric-${profile.localId}"></div>
-                    <div class="effect-overlay laser-heat" id="effect-laser-${profile.localId}"></div>
-                    
-                    <!-- Bullet Holes -->
-                    <div class="bullet-holes-container" id="bullets-${profile.localId}"></div>
-                    
-                    <!-- Shatter Container -->
-                    <div class="shatter-container" id="shatter-${profile.localId}"></div>
-                    
-                    ${profile.isDestroyed ? this.createDestroyedOverlay(profile.localId) : ''}
-                </div>
-                
-                <div class="profile-info">
-                    <h2 class="display-name">${Utils.escapeHtml(profile.displayName)}</h2>
-                    <p class="username">@${Utils.escapeHtml(profile.name)}</p>
-                </div>
-                
-                <div class="health-section">
-                    <div class="health-label">
-                        <span class="health-label-text">Health</span>
-                        <span class="health-value ${healthLevel}" id="health-text-${profile.localId}">
-                            ${profile.health}/${profile.maxHealth}
-                        </span>
-                    </div>
-                    <div class="health-bar-container">
-                        <div class="health-bar-fill ${healthLevel}"
-                             id="health-bar-${profile.localId}"
-                             style="width: ${healthPercent}%"></div>
-                    </div>
-                </div>
-            </article>
-        `;
-    },
-    
-    /**
-     * Create destroyed overlay
-     */
-    createDestroyedOverlay(localId) {
-        return `
-            <div class="destroyed-overlay">
-                <div class="destroyed-text">💀 DESTROYED!</div>
-                <button class="respawn-btn-card" data-respawn-id="${localId}">
-                    ↻ Respawn
-                </button>
-            </div>
-        `;
-    },
-    
-    /**
-     * Create empty state
-     */
-    createEmptyState() {
-        return `
-            <div class="empty-state">
-                <div class="empty-state-icon">🎯</div>
-                <p class="empty-state-text">
-                    No dummies yet!<br>
-                    Enter a Roblox username above to spawn a target.
-                </p>
-            </div>
-        `;
-    },
-    
-    /**
-     * Spawn profile card
-     */
-    spawnProfile(profile) {
-        const emptyState = this.elements.container.querySelector('.empty-state');
-        if (emptyState) emptyState.remove();
-        
-        this.elements.container.insertAdjacentHTML('beforeend', this.createProfileCard(profile));
-        this.attachCardListeners(profile.localId);
-        this.updateStats();
-        
-        // Remove spawning class after animation
-        setTimeout(() => {
-            const card = document.getElementById(`profile-${profile.localId}`);
-            if (card) card.classList.remove('spawning');
-        }, 500);
-    },
-    
-    /**
-     * Attach event listeners to a card
-     */
-    attachCardListeners(localId) {
-        const card = document.getElementById(`profile-${localId}`);
-        if (!card) return;
-        
-        // Remove button
-        const removeBtn = card.querySelector('.remove-btn');
-        removeBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            this.handleRemove(localId);
-        });
-        
-        // Click to attack
-        card.addEventListener('click', (e) => {
-            if (e.target.closest('.remove-btn') ||
-                e.target.closest('.respawn-btn-card')) return;
-            
-            CombatSystem.attack(localId, e);
-        });
-        
-        // Respawn button
-        const respawnBtn = card.querySelector('.respawn-btn-card');
-        if (respawnBtn) {
-            respawnBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                CombatSystem.respawn(localId);
-            });
-        }
-    },
-    
-    /**
-     * Update profile card
-     */
-    updateProfileCard(profile) {
-        if (!profile) return;
-        
-        const healthPercent = (profile.health / profile.maxHealth) * 100;
-        const healthLevel = this.getHealthLevel(profile.health, profile.maxHealth);
-        const crackLevel = this.getCrackLevel(profile.health, profile.maxHealth);
-        
-        // Update health bar
-        const healthBar = document.getElementById(`health-bar-${profile.localId}`);
-        const healthText = document.getElementById(`health-text-${profile.localId}`);
-        
-        if (healthBar) {
-            healthBar.style.width = `${healthPercent}%`;
-            healthBar.className = `health-bar-fill ${healthLevel}`;
-        }
-        
-        if (healthText) {
-            healthText.textContent = `${profile.health}/${profile.maxHealth}`;
-            healthText.className = `health-value ${healthLevel}`;
-        }
-        
-        // Update avatar state
-        const avatar = document.getElementById(`avatar-${profile.localId}`);
-        if (avatar) {
-            avatar.classList.remove('damaged', 'critical');
-            if (healthLevel === 'low') avatar.classList.add('critical');
-            else if (healthLevel === 'mid') avatar.classList.add('damaged');
-        }
-        
-        // Update cracks
-        for (let i = 1; i <= 3; i++) {
-            const crack = document.getElementById(`crack${i}-${profile.localId}`);
-            if (crack) {
-                crack.classList.toggle('visible', crackLevel >= i);
-            }
-        }
-        
-        this.updateStats();
-    },
-    
-    /**
-     * Show floating damage text
-     */
-    showDamageText(localId, damage, isCritical, x, y, extraClass = '') {
-        const card = document.getElementById(`profile-${localId}`);
-        if (!card) return;
-        
-        const damageText = document.createElement('div');
-        const typeClass = extraClass || (isCritical ? 'critical' : 'normal');
-        damageText.className = `damage-text ${typeClass}`;
-        damageText.textContent = isCritical ? `-${damage} CRIT!` : `-${damage}`;
-        
-        // Position
-        if (x && y) {
-            const rect = card.getBoundingClientRect();
-            damageText.style.left = `${x - rect.left}px`;
-            damageText.style.top = `${y - rect.top - 20}px`;
-        } else {
-            // Random position for DOT
-            damageText.style.left = `${Utils.random(30, 70)}%`;
-            damageText.style.top = `${Utils.random(20, 40)}%`;
-        }
-        
-        card.appendChild(damageText);
-        setTimeout(() => damageText.remove(), 1000);
-    },
-    
-    /**
-     * Show effect on avatar
-     */
-    showEffect(localId, effectType, duration = 500) {
-        const effectEl = document.getElementById(`effect-${effectType}-${localId}`);
-        if (effectEl) {
-            effectEl.classList.add('active');
-            setTimeout(() => {
-                effectEl.classList.remove('active');
-            }, duration);
-        }
-    },
-    
-    /**
-     * Remove effect
-     */
-    removeEffect(localId, effectType) {
-        const effectEl = document.getElementById(`effect-${effectType}-${localId}`);
-        if (effectEl) {
-            effectEl.classList.remove('active');
-        }
-    },
-    
-    /**
-     * Add bullet hole
-     */
-    addBulletHole(localId, relX, relY) {
-        const container = document.getElementById(`bullets-${localId}`);
-        if (!container) return;
-        
-        const hole = document.createElement('div');
-        hole.className = 'bullet-hole';
-        hole.style.left = `${relX}%`;
-        hole.style.top = `${relY}%`;
-        
-        container.appendChild(hole);
-        ProfileStore.addBulletHole(localId, relX, relY);
-    },
-    
-    /**
-     * Play hit animation on card
-     */
-    playHitAnimation(localId, shake = 'light', isCritical = false) {
-        const card = document.getElementById(`profile-${localId}`);
-        if (!card) return;
-        
-        // Flash
-        card.classList.add('hit-flash');
-        setTimeout(() => card.classList.remove('hit-flash'), 150);
-        
-        // Shake
-        card.classList.remove('shake-light', 'shake-medium', 'shake-heavy', 'knockback', 'bounce', 'rotate-hit');
-        void card.offsetWidth;
-        
-        if (shake === 'heavy') {
-            card.classList.add('shake-heavy');
-            setTimeout(() => card.classList.remove('shake-heavy'), 500);
-        } else if (shake === 'medium') {
-            card.classList.add('shake-medium');
-            setTimeout(() => card.classList.remove('shake-medium'), 400);
-        } else {
-            card.classList.add('shake-light');
-            setTimeout(() => card.classList.remove('shake-light'), 300);
-        }
-        
-        // Random rotation on big hits
-        if (isCritical || shake === 'heavy') {
-            const rotation = Utils.random(-15, 15);
-            card.style.setProperty('--rot-amount', `${rotation}deg`);
-            card.classList.add('rotate-hit');
-            setTimeout(() => card.classList.remove('rotate-hit'), 400);
-        }
-    },
-    
-    /**
-     * Play knockback animation
-     */
-    playKnockback(localId) {
-        const card = document.getElementById(`profile-${localId}`);
-        if (!card) return;
-        
-        card.classList.add('knockback');
-        setTimeout(() => card.classList.remove('knockback'), 400);
-    },
-    
-    /**
-     * Play bounce animation
-     */
-    playBounce(localId) {
-        const card = document.getElementById(`profile-${localId}`);
-        if (!card) return;
-        
-        card.classList.add('bounce');
-        setTimeout(() => card.classList.remove('bounce'), 500);
-    },
-    
-    /**
-     * Play destroy animation
-     */
-    playDestroyAnimation(localId, avatarUrl) {
-        const card = document.getElementById(`profile-${localId}`);
-        const avatarWrapper = document.getElementById(`avatar-wrapper-${localId}`);
-        const shatterContainer = document.getElementById(`shatter-${localId}`);
-        
-        if (!card || !avatarWrapper) return;
-        
-        card.classList.add('destroyed');
-        
-        // Create shatter pieces
-        if (shatterContainer && avatarUrl) {
-            this.createShatterPieces(shatterContainer, avatarUrl);
-        }
-        
-        // Add destroyed overlay
-        setTimeout(() => {
-            if (!avatarWrapper.querySelector('.destroyed-overlay')) {
-                avatarWrapper.insertAdjacentHTML('beforeend', this.createDestroyedOverlay(localId));
-                
-                const respawnBtn = avatarWrapper.querySelector('.respawn-btn-card');
-                if (respawnBtn) {
-                    respawnBtn.addEventListener('click', (e) => {
-                        e.stopPropagation();
-                        CombatSystem.respawn(localId);
-                    });
-                }
-            }
-        }, 500);
-    },
-    
-    /**
-     * Create shatter pieces
-     */
-    createShatterPieces(container, avatarUrl) {
-        container.innerHTML = '';
-        
-        const gridSize = 4;
-        const pieceSize = 150 / gridSize;
-        
-        for (let row = 0; row < gridSize; row++) {
-            for (let col = 0; col < gridSize; col++) {
-                const piece = document.createElement('div');
-                piece.className = 'shatter-piece';
-                
-                const x = col * pieceSize;
-                const y = row * pieceSize;
-                
-                piece.style.cssText = `
-                    width: ${pieceSize}px;
-                    height: ${pieceSize}px;
-                    left: ${x}px;
-                    top: ${y}px;
-                    background-image: url(${avatarUrl});
-                    background-position: -${x}px -${y}px;
-                `;
-                
-                // ========================================
-// CONTINUED FROM PREVIOUS PART
-// UIRenderer.createShatterPieces continued...
-// ========================================
-
-                // Random trajectory
-                const angle = Math.random() * Math.PI * 2;
-                const distance = 80 + Math.random() * 120;
-                const rotation = -360 + Math.random() * 720;
-                
-                piece.style.setProperty('--tx', `${Math.cos(angle) * distance}px`);
-                piece.style.setProperty('--ty', `${Math.sin(angle) * distance}px`);
-                piece.style.setProperty('--rot', `${rotation}deg`);
-                
-                container.appendChild(piece);
-                
-                // Trigger animation
-                setTimeout(() => piece.classList.add('animate'), 10 + (row * gridSize + col) * 20);
-            }
-        }
-    },
-    
-    /**
-     * Play respawn animation
-     */
-    playRespawnAnimation(localId) {
-        const card = document.getElementById(`profile-${localId}`);
-        const avatarWrapper = document.getElementById(`avatar-wrapper-${localId}`);
-        const shatterContainer = document.getElementById(`shatter-${localId}`);
-        const bulletsContainer = document.getElementById(`bullets-${localId}`);
-        const avatar = document.getElementById(`avatar-${localId}`);
-        
-        if (!card) return;
-        
-        // Remove destroyed state
-        card.classList.remove('destroyed');
-        
-        // Clear containers
-        if (shatterContainer) shatterContainer.innerHTML = '';
-        if (bulletsContainer) bulletsContainer.innerHTML = '';
-        
-        // Remove destroyed overlay
-        const overlay = avatarWrapper?.querySelector('.destroyed-overlay');
-        if (overlay) overlay.remove();
-        
-        // Reset avatar
-        if (avatar) {
-            avatar.classList.remove('damaged', 'critical');
-            avatar.style.opacity = '1';
-            avatar.style.transform = 'scale(1)';
-        }
-        
-        // Remove cracks
-        for (let i = 1; i <= 3; i++) {
-            const crack = document.getElementById(`crack${i}-${localId}`);
-            if (crack) crack.classList.remove('visible');
-        }
-        
-        // Remove all effects
-        ['burn', 'burning', 'electric', 'laser'].forEach(effect => {
-            this.removeEffect(localId, effect);
-        });
-        
-        // Play spawn animation
-        card.classList.add('spawning');
-        setTimeout(() => card.classList.remove('spawning'), 500);
-    },
-    
-    /**
-     * Handle remove profile
-     */
-    handleRemove(localId) {
-        const card = document.getElementById(`profile-${localId}`);
-        if (card) {
-            card.style.animation = 'spawn-in 0.3s ease-out reverse';
-            setTimeout(() => {
-                card.remove();
-                ProfileStore.remove(localId);
-                this.updateStats();
-                
-                if (ProfileStore.count() === 0) {
-                    this.elements.container.innerHTML = this.createEmptyState();
-                }
-            }, 280);
-        }
-    },
-    
-    /**
-     * Render all profiles
-     */
-    renderAll() {
-        const profiles = ProfileStore.getAll();
-        
-        if (profiles.length === 0) {
-            this.elements.container.innerHTML = this.createEmptyState();
-        } else {
-            this.elements.container.innerHTML = profiles
-                .map(p => this.createProfileCard(p))
-                .join('');
-            
-            profiles.forEach(profile => {
-                this.attachCardListeners(profile.localId);
-                
-                // Restore bullet holes
-                const bulletsContainer = document.getElementById(`bullets-${profile.localId}`);
-                if (bulletsContainer && profile.bulletHoles) {
-                    profile.bulletHoles.forEach(hole => {
-                        const holeEl = document.createElement('div');
-                        holeEl.className = 'bullet-hole';
-                        holeEl.style.left = `${hole.x}%`;
-                        holeEl.style.top = `${hole.y}%`;
-                        bulletsContainer.appendChild(holeEl);
-                    });
-                }
-            });
-            
-            // Remove spawning class
-            setTimeout(() => {
-                document.querySelectorAll('.profile-card.spawning').forEach(card => {
-                    card.classList.remove('spawning');
-                });
-            }, 100);
-        }
-        
-        this.updateStats();
-    },
-    
-    /**
-     * Clear all profiles
-     */
-    clearAll() {
-        ProfileStore.clear();
-        this.elements.container.innerHTML = this.createEmptyState();
-        this.updateStats();
-        this.setStatus('All dummies cleared', 'success');
+        // Initialize sound on first interaction
+        document.addEventListener('click', () => SoundSystem.init(), { once: true });
+        document.addEventListener('touchstart', () => SoundSystem.init(), { once: true });
     }
-};
-
-// ========================================
-// COMBAT SYSTEM
-// Handle attacks, damage, and effects
-// ========================================
-const CombatSystem = {
-    /**
-     * Attack a profile
-     */
-    attack(localId, event) {
-        const profile = ProfileStore.get(localId);
-        const tool = ToolsRegistry.getSelected();
+    
+    setupCanvas() {
+        this.resize();
+        window.addEventListener('resize', () => this.resize());
+    }
+    
+    resize() {
+        const rect = this.arena.getBoundingClientRect();
+        this.canvas.width = rect.width;
+        this.canvas.height = rect.height;
+        this.width = rect.width;
+        this.height = rect.height;
+    }
+    
+    bindEvents() {
+        // Mouse events
+        this.canvas.addEventListener('mousedown', (e) => this.onPointerDown(e));
+        this.canvas.addEventListener('mousemove', (e) => this.onPointerMove(e));
+        this.canvas.addEventListener('mouseup', (e) => this.onPointerUp(e));
+        this.canvas.addEventListener('mouseleave', (e) => this.onPointerUp(e));
         
-        if (!profile || profile.isDestroyed || !tool) return null;
+        // Touch events
+        this.canvas.addEventListener('touchstart', (e) => this.onPointerDown(e), { passive: false });
+        this.canvas.addEventListener('touchmove', (e) => this.onPointerMove(e), { passive: false });
+        this.canvas.addEventListener('touchend', (e) => this.onPointerUp(e));
+        this.canvas.addEventListener('touchcancel', (e) => this.onPointerUp(e));
         
-        // Calculate damage
-        const { damage, isCritical } = ToolsRegistry.calculateDamage(tool);
+        // Tool selection
+        document.querySelectorAll('.tool-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                this.selectTool(btn.dataset.tool);
+                SoundSystem.play('ui');
+            });
+        });
         
-        // Get click position
-        const x = event.clientX;
-        const y = event.clientY;
+        // Header buttons
+        document.getElementById('spawn-btn').addEventListener('click', () => {
+            this.openSpawnPanel();
+            SoundSystem.play('ui');
+        });
         
-        // Apply damage
-        ProfileStore.applyDamage(localId, damage);
+        document.getElementById('sound-btn').addEventListener('click', (e) => {
+            const enabled = SoundSystem.toggle();
+            e.currentTarget.classList.toggle('muted', !enabled);
+            e.currentTarget.textContent = enabled ? '🔊' : '🔇';
+        });
         
-        // Get card position for effects
-        const card = document.getElementById(`profile-${localId}`);
-        const avatarWrapper = document.getElementById(`avatar-wrapper-${localId}`);
-        const cardRect = card?.getBoundingClientRect();
-        const avatarRect = avatarWrapper?.getBoundingClientRect();
+        document.getElementById('reset-btn').addEventListener('click', () => {
+            this.resetAll();
+            SoundSystem.play('ui');
+        });
         
-        // Calculate center of avatar for particles
-        const centerX = avatarRect ? avatarRect.left + avatarRect.width / 2 : x;
-        const centerY = avatarRect ? avatarRect.top + avatarRect.height / 2 : y;
+        // Spawn panel
+        document.getElementById('panel-overlay').addEventListener('click', () => this.closeSpawnPanel());
+        document.getElementById('panel-close').addEventListener('click', () => this.closeSpawnPanel());
+        document.getElementById('spawn-confirm').addEventListener('click', () => this.spawnFromInput());
+        document.getElementById('spawn-random').addEventListener('click', () => this.spawnRandom());
         
-        // === Apply tool-specific effects ===
-        this.applyToolEffects(tool, localId, x, y, centerX, centerY, cardRect, avatarRect, isCritical);
+        document.getElementById('username-input').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') this.spawnFromInput();
+        });
         
-        // Show damage text
-        UIRenderer.showDamageText(localId, damage, isCritical, x, y, tool.id);
+        // Preset buttons
+        document.querySelectorAll('.preset-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.getElementById('username-input').value = btn.dataset.username;
+                this.spawnFromInput();
+            });
+        });
+    }
+    
+    getPointerPos(e) {
+        const rect = this.canvas.getBoundingClientRect();
+        let clientX, clientY;
         
-        // Play hit animation
-        UIRenderer.playHitAnimation(localId, tool.shake, isCritical);
-        
-        // Play sound
-        if (isCritical) {
-            SoundSystem.play('critical');
+        if (e.touches && e.touches.length > 0) {
+            clientX = e.touches[0].clientX;
+            clientY = e.touches[0].clientY;
+        } else if (e.changedTouches && e.changedTouches.length > 0) {
+            clientX = e.changedTouches[0].clientX;
+            clientY = e.changedTouches[0].clientY;
         } else {
-            SoundSystem.play(tool.sound);
+            clientX = e.clientX;
+            clientY = e.clientY;
         }
         
-        // Update display
-        const updatedProfile = ProfileStore.get(localId);
-        UIRenderer.updateProfileCard(updatedProfile);
+        return {
+            x: clientX - rect.left,
+            y: clientY - rect.top
+        };
+    }
+    
+    onPointerDown(e) {
+        e.preventDefault();
+        const pos = this.getPointerPos(e);
+        const tool = TOOLS[this.currentTool];
         
-        // Check if destroyed
-        if (updatedProfile.isDestroyed) {
-            this.handleDestroy(localId, updatedProfile.avatarUrl, centerX, centerY);
+        // Find dummy under pointer
+        const dummy = this.findDummyAt(pos.x, pos.y);
+        
+        if (this.currentTool === 'hand' && dummy) {
+            // Start dragging
+            this.isDragging = true;
+            this.dragTarget = dummy;
+            this.dragOffsetX = pos.x - dummy.x;
+            this.dragOffsetY = pos.y - dummy.y;
+            this.lastDragX = pos.x;
+            this.lastDragY = pos.y;
+            this.dragVelX = 0;
+            this.dragVelY = 0;
+            dummy.isDragging = true;
+            SoundSystem.play('tap');
+        } else if (dummy) {
+            // Apply tool effect
+            this.applyTool(pos.x, pos.y, dummy);
+        } else if (this.currentTool === 'explosion') {
+            // Explosion can hit area
+            this.applyExplosion(pos.x, pos.y);
         }
-        
-        return { damage, isCritical, destroyed: updatedProfile.isDestroyed };
-    },
+    }
     
-    /**
-     * Apply tool-specific effects
-     */
-    applyToolEffects(tool, localId, x, y, centerX, centerY, cardRect, avatarRect, isCritical) {
-        const effects = tool.effects || [];
+    onPointerMove(e) {
+        e.preventDefault();
         
-        effects.forEach(effect => {
-            switch (effect) {
-                case 'spark':
-                    ParticleSystem.createSparks(x, y, isCritical ? 15 : 8);
-                    break;
-                    
-                case 'smoke':
-                    ParticleSystem.createSmoke(centerX, centerY, isCritical ? 12 : 6);
-                    break;
-                    
-                case 'knockback':
-                    if (CONFIG.knockbackEnabled) {
-                        UIRenderer.playKnockback(localId);
-                    }
-                    break;
-                    
-                case 'bounce':
-                    UIRenderer.playBounce(localId);
-                    break;
-                    
-                case 'screenShake':
-                    ScreenEffects.shake(tool.shake === 'heavy' ? 'heavy' : 'light');
-                    break;
-                    
-                case 'bulletHole':
-                    if (avatarRect) {
-                        const relX = ((x - avatarRect.left) / avatarRect.width) * 100;
-                        const relY = ((y - avatarRect.top) / avatarRect.height) * 100;
-                        // Only add if within avatar bounds
-                        if (relX >= 0 && relX <= 100 && relY >= 0 && relY <= 100) {
-                            UIRenderer.addBulletHole(localId, relX, relY);
-                        }
-                    }
-                    ParticleSystem.createBulletTrail(x, y);
-                    break;
-                    
-                case 'recoil':
-                    ScreenEffects.flash('white');
-                    break;
-                    
-                case 'laserBurn':
-                    UIRenderer.showEffect(localId, 'laser', 400);
-                    ParticleSystem.createSparks(centerX, centerY, 12, ['#ff0080', '#ff00ff', '#ffffff']);
-                    break;
-                    
-                case 'heatDistortion':
-                    ScreenEffects.heatDistortion(centerX, centerY);
-                    break;
-                    
-                case 'explosion':
-                    ParticleSystem.createExplosion(centerX, centerY, 40, '#ff4444');
-                    ParticleSystem.createSmoke(centerX, centerY, 15);
-                    ScreenEffects.flash('orange');
-                    break;
-                    
-                case 'shockwave':
-                    ParticleSystem.createShockwave(centerX, centerY);
-                    break;
-                    
-                case 'knockbackAll':
-                    this.knockbackAllProfiles(localId);
-                    break;
-                    
-                case 'burn':
-                    UIRenderer.showEffect(localId, 'burn', 500);
-                    ParticleSystem.createFire(centerX, centerY, 20);
-                    break;
-                    
-                case 'fireParticles':
-                    ParticleSystem.createFire(centerX, centerY, 15);
-                    // Apply DOT if configured
-                    if (tool.dot) {
-                        ProfileStore.applyDOT(localId, tool.dot);
-                        UIRenderer.showEffect(localId, 'burning', tool.dot.duration);
-                    }
-                    break;
-                    
-                case 'electricArc':
-                    UIRenderer.showEffect(localId, 'electric', 400);
-                    // Create arcs to random positions
-                    for (let i = 0; i < 3; i++) {
-                        const endX = centerX + Utils.random(-100, 100);
-                        const endY = centerY + Utils.random(-100, 100);
-                        ParticleSystem.createElectricArc(centerX, centerY, endX, endY, 6);
-                    }
-                    break;
-                    
-                case 'electricFlicker':
-                    ScreenEffects.electricFlicker();
-                    break;
-            }
-        });
-    },
-    
-    /**
-     * Knockback all profiles (bomb effect)
-     */
-    knockbackAllProfiles(sourceLocalId) {
-        const profiles = ProfileStore.getAlive();
-        
-        profiles.forEach(profile => {
-            if (profile.localId !== sourceLocalId) {
-                UIRenderer.playKnockback(profile.localId);
-                UIRenderer.playBounce(profile.localId);
-                
-                // Apply splash damage
-                const splashDamage = Utils.randomInt(10, 20);
-                ProfileStore.applyDamage(profile.localId, splashDamage);
-                UIRenderer.showDamageText(profile.localId, splashDamage, false, null, null, 'explosion');
-                UIRenderer.updateProfileCard(ProfileStore.get(profile.localId));
-                
-                // Check if destroyed
-                const updated = ProfileStore.get(profile.localId);
-                if (updated.isDestroyed) {
-                    const card = document.getElementById(`profile-${profile.localId}`);
-                    const rect = card?.getBoundingClientRect();
-                    if (rect) {
-                        this.handleDestroy(profile.localId, updated.avatarUrl, 
-                            rect.left + rect.width / 2, rect.top + rect.height / 2);
-                    }
-                }
-            }
-        });
-    },
-    
-    /**
-     * Handle profile destruction
-     */
-    handleDestroy(localId, avatarUrl, x, y) {
-        SoundSystem.play('destroy');
-        ParticleSystem.createExplosion(x, y, 25, '#ff3366');
-        ParticleSystem.createSmoke(x, y, 10);
-        ScreenEffects.flash('red');
-        UIRenderer.playDestroyAnimation(localId, avatarUrl);
-    },
-    
-    /**
-     * Respawn a profile
-     */
-    respawn(localId) {
-        ProfileStore.respawn(localId);
-        const profile = ProfileStore.get(localId);
-        
-        if (profile) {
-            SoundSystem.play('respawn');
-            UIRenderer.playRespawnAnimation(localId);
-            UIRenderer.updateProfileCard(profile);
+        if (this.isDragging && this.dragTarget) {
+            const pos = this.getPointerPos(e);
             
-            // Particles at respawn
-            const card = document.getElementById(`profile-${localId}`);
-            if (card) {
-                const rect = card.getBoundingClientRect();
-                ParticleSystem.createSparks(
-                    rect.left + rect.width / 2,
-                    rect.top + rect.height / 2,
-                    20,
-                    ['#22c55e', '#4ade80', '#ffffff']
+            // Calculate velocity for throw
+            this.dragVelX = pos.x - this.lastDragX;
+            this.dragVelY = pos.y - this.lastDragY;
+            this.lastDragX = pos.x;
+            this.lastDragY = pos.y;
+            
+            // Move dummy with constraints
+            this.dragTarget.x = Utils.clamp(
+                pos.x - this.dragOffsetX,
+                this.dragTarget.radius,
+                this.width - this.dragTarget.radius
+            );
+            this.dragTarget.y = Utils.clamp(
+                pos.y - this.dragOffsetY,
+                this.dragTarget.radius,
+                this.height - this.dragTarget.radius
+            );
+        }
+    }
+    
+    onPointerUp(e) {
+        if (this.isDragging && this.dragTarget) {
+            // Apply throw velocity
+            const speed = Math.sqrt(this.dragVelX ** 2 + this.dragVelY ** 2);
+            const throwSpeed = Math.min(speed * CONFIG.throwMultiplier, CONFIG.maxThrowSpeed);
+            
+            if (speed > 2) {
+                const angle = Math.atan2(this.dragVelY, this.dragVelX);
+                this.dragTarget.vx = Math.cos(angle) * throwSpeed * 3;
+                this.dragTarget.vy = Math.sin(angle) * throwSpeed * 3;
+                this.dragTarget.angularVel = this.dragVelX * 0.5;
+            }
+            
+            this.dragTarget.isDragging = false;
+            this.dragTarget = null;
+            this.isDragging = false;
+        }
+    }
+    
+    findDummyAt(x, y) {
+        for (let i = this.dummies.length - 1; i >= 0; i--) {
+            const dummy = this.dummies[i];
+            if (!dummy.isDestroyed && dummy.containsPoint(x, y)) {
+                return dummy;
+            }
+        }
+        return null;
+    }
+    
+    applyTool(x, y, dummy) {
+        const tool = TOOLS[this.currentTool];
+        if (!tool) return;
+        
+        let damage = 0;
+        
+        switch (this.currentTool) {
+            case 'tap':
+                damage = dummy.applyDamage(tool.damage, this.particles);
+                this.particles.createSparks(x, y, 8, ['#ffa94d', '#fff']);
+                SoundSystem.play('hit', { intensity: 0.4 });
+                this.flashArena('red', x, y);
+                break;
+                
+            case 'hammer':
+                damage = dummy.applyDamage(tool.damage, this.particles);
+                dummy.applyForce(0, tool.force);
+                this.particles.createImpact(x, y, 0.8);
+                SoundSystem.play('hammer');
+                this.shakeArena(tool.shake);
+                this.flashArena('red', x, y);
+                break;
+                
+            case 'push':
+                const angle = Math.atan2(y - dummy.y, x - dummy.x);
+                dummy.applyForce(
+                    -Math.cos(angle) * tool.force,
+                    -Math.sin(angle) * tool.force
+                );
+                damage = dummy.applyDamage(tool.damage, this.particles);
+                this.particles.createSparks(dummy.x, dummy.y, 10, ['#00d4ff', '#fff']);
+                SoundSystem.play('push');
+                break;
+                
+            case 'freeze':
+                dummy.freeze(tool.duration);
+                this.particles.createFreeze(dummy.x, dummy.y);
+                SoundSystem.play('freeze');
+                this.flashArena('blue', dummy.x, dummy.y);
+                break;
+                
+            case 'dot':
+                dummy.applyDOT(tool.duration);
+                damage = dummy.applyDamage(50, this.particles, 'orange');
+                this.particles.createFire(dummy.x, dummy.y);
+                SoundSystem.play('fire');
+                break;
+        }
+        
+        this.stats.totalDamage += damage;
+        this.updateStats();
+    }
+    
+    applyExplosion(x, y) {
+        const tool = TOOLS.explosion;
+        let totalDamage = 0;
+        
+        this.dummies.forEach(dummy => {
+            if (dummy.isDestroyed) return;
+            
+            const dist = Utils.distance(x, y, dummy.x, dummy.y);
+            
+            if (dist < tool.radius) {
+                const intensity = 1 - (dist / tool.radius);
+                const damage = Math.floor(tool.damage * intensity);
+                totalDamage += dummy.applyDamage(damage, this.particles);
+                
+                // Apply force away from explosion
+                const angle = Math.atan2(dummy.y - y, dummy.x - x);
+                const force = tool.force * intensity;
+                dummy.applyForce(
+                    Math.cos(angle) * force,
+                    Math.sin(angle) * force - 5
                 );
             }
-        }
-    },
-    
-    /**
-     * Respawn all profiles
-     */
-    respawnAll() {
-        const profiles = ProfileStore.getAll();
-        ProfileStore.respawnAll();
-        
-        profiles.forEach(p => {
-            UIRenderer.playRespawnAnimation(p.localId);
-            UIRenderer.updateProfileCard(ProfileStore.get(p.localId));
         });
         
-        SoundSystem.play('respawn');
-        UIRenderer.setStatus('All dummies respawned!', 'success');
+        this.particles.createExplosion(x, y);
+        SoundSystem.play('explosion');
+        this.shakeArena('heavy');
+        this.flashArena('white', x, y);
+        
+        this.stats.totalDamage += totalDamage;
+        this.updateStats();
     }
-};
-
-// ========================================
-// MAIN APPLICATION CONTROLLER
-// ========================================
-const App = {
-    /**
-     * Initialize the application
-     */
-    init() {
-        console.log('🎮 Initializing Roblox Dummy Arena...');
-        
-        // Initialize all systems
-        UIRenderer.init();
-        ToolsRegistry.init();
-        SoundSystem.init();
-        ParticleSystem.init();
-        ScreenEffects.init();
-        
-        // Load saved data
-        ProfileStore.load();
-        
-        // Render UI
-        UIRenderer.renderAll();
-        UIRenderer.renderTools();
-        
-        // Bind events
-        this.bindEvents();
-        
-        console.log('✅ Roblox Dummy Arena ready!');
-    },
     
-    /**
-     * Bind all event listeners
-     */
-    bindEvents() {
-        // Add profile button
-        UIRenderer.elements.addBtn.addEventListener('click', () => this.addProfile());
+    selectTool(toolId) {
+        this.currentTool = toolId;
         
-        // Enter key in input
-        UIRenderer.elements.input.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') this.addProfile();
+        document.querySelectorAll('.tool-btn').forEach(btn => {
+            btn.classList.toggle('selected', btn.dataset.tool === toolId);
         });
         
-        // Clear all button
-        UIRenderer.elements.clearBtn.addEventListener('click', () => {
-            if (confirm('Remove all dummies?')) {
-                UIRenderer.clearAll();
-            }
-        });
-        
-        // Respawn all button
-        UIRenderer.elements.respawnAllBtn.addEventListener('click', () => {
-            CombatSystem.respawnAll();
-        });
-        
-        // Sound toggle
-        UIRenderer.elements.soundToggle.addEventListener('click', () => {
-            const enabled = SoundSystem.toggle();
-            UIRenderer.elements.soundToggle.classList.toggle('muted', !enabled);
-            UIRenderer.elements.soundToggle.textContent = enabled ? '🔊' : '🔇';
-        });
-        
-        // Sidebar toggle
-        UIRenderer.elements.sidebarToggle.addEventListener('click', () => {
-            UIRenderer.elements.sidebar.classList.toggle('collapsed');
-        });
-        
-        // Mobile tool toggle
-        UIRenderer.elements.mobileToolToggle.addEventListener('click', () => {
-            UIRenderer.elements.sidebar.classList.toggle('mobile-open');
-        });
-        
-        // Close mobile sidebar when clicking outside
-        document.addEventListener('click', (e) => {
-            if (window.innerWidth <= 768) {
-                const sidebar = UIRenderer.elements.sidebar;
-                const toggle = UIRenderer.elements.mobileToolToggle;
-                
-                if (!sidebar.contains(e.target) && !toggle.contains(e.target)) {
-                    sidebar.classList.remove('mobile-open');
-                }
-            }
-        });
-        
-        // Resume audio on first interaction
-        document.addEventListener('click', () => SoundSystem.resume(), { once: true });
-        
-        // Keyboard shortcuts
-        document.addEventListener('keydown', (e) => {
-            // Number keys 1-7 to select tools
-            const toolKeys = ['1', '2', '3', '4', '5', '6', '7'];
-            const tools = ToolsRegistry.getAll();
-            
-            const keyIndex = toolKeys.indexOf(e.key);
-            if (keyIndex !== -1 && keyIndex < tools.length) {
-                ToolsRegistry.select(tools[keyIndex].id);
-                UIRenderer.updateToolSelection();
-            }
-            
-            // R to respawn all
-            if (e.key === 'r' || e.key === 'R') {
-                if (!e.target.matches('input')) {
-                    CombatSystem.respawnAll();
-                }
-            }
-        });
-    },
+        const tool = TOOLS[toolId];
+        this.canvas.style.cursor = tool?.cursor || 'default';
+    }
     
-    /**
-     * Add a new profile
-     */
-    async addProfile() {
-        const username = UIRenderer.elements.input.value.trim();
+    flashArena(color, x, y) {
+        const flash = document.getElementById(`flash-${color}`);
+        if (!flash) return;
         
-        // Validation
+        // Set flash position
+        const xPercent = (x / this.width) * 100;
+        const yPercent = (y / this.height) * 100;
+        flash.style.setProperty('--flash-x', `${xPercent}%`);
+        flash.style.setProperty('--flash-y', `${yPercent}%`);
+        
+        flash.classList.remove('active');
+        void flash.offsetWidth; // Force reflow
+        flash.classList.add('active');
+        
+        setTimeout(() => flash.classList.remove('active'), 250);
+    }
+    
+    shakeArena(intensity) {
+        this.arena.classList.remove('shake-light', 'shake-medium', 'shake-heavy');
+        void this.arena.offsetWidth;
+        this.arena.classList.add(`shake-${intensity}`);
+        
+        setTimeout(() => {
+            this.arena.classList.remove(`shake-${intensity}`);
+        }, intensity === 'heavy' ? 500 : intensity === 'medium' ? 350 : 250);
+    }
+    
+    openSpawnPanel() {
+        document.getElementById('panel-overlay').classList.add('active');
+        document.getElementById('spawn-panel').classList.add('active');
+        document.getElementById('username-input').focus();
+        document.getElementById('panel-status').textContent = '';
+    }
+    
+    closeSpawnPanel() {
+        document.getElementById('panel-overlay').classList.remove('active');
+        document.getElementById('spawn-panel').classList.remove('active');
+    }
+    
+    setSpawnStatus(message, type) {
+        const status = document.getElementById('panel-status');
+        status.textContent = message;
+        status.className = `panel-status ${type}`;
+    }
+    
+    async spawnFromInput() {
+        const input = document.getElementById('username-input');
+        const username = input.value.trim();
+        
         if (!username) {
-            UIRenderer.setStatus('Please enter a username', 'error');
+            this.setSpawnStatus('Please enter a username', 'error');
             return;
         }
         
-        if (ProfileStore.hasUsername(username)) {
-            UIRenderer.setStatus(`"${username}" already exists`, 'error');
-            return;
-        }
+        await this.spawnDummy(username);
+    }
+    
+    async spawnRandom() {
+        const names = ['Roblox', 'Builderman', 'ROBLOX', 'John', 'Jane'];
+        const name = names[Math.floor(Math.random() * names.length)];
+        await this.spawnDummy(name);
+    }
+    
+    async spawnDummy(username) {
+        const confirmBtn = document.getElementById('spawn-confirm');
+        confirmBtn.disabled = true;
+        confirmBtn.innerHTML = '<span class="loading-spinner"></span>';
         
-        // Fetch and spawn
-        UIRenderer.setLoading(true);
-        UIRenderer.setStatus('Fetching profile...', 'loading');
+        this.setSpawnStatus('Loading profile...', 'loading');
         
         try {
-            const profileData = await RobloxAPI.fetchProfile(username);
-            const profile = ProfileStore.add(profileData);
-            UIRenderer.spawnProfile(profile);
-            UIRenderer.setStatus(`Added ${profileData.displayName}!`, 'success');
-            UIRenderer.elements.input.value = '';
+            const profile = await RobloxAPI.loadProfile(username);
             
-            // Play spawn effect
-            setTimeout(() => {
-                const card = document.getElementById(`profile-${profile.localId}`);
-                if (card) {
-                    const rect = card.getBoundingClientRect();
-                    ParticleSystem.createSparks(
-                        rect.left + rect.width / 2,
-                        rect.top + rect.height / 2,
-                        15,
-                        ['#00d4ff', '#ff3366', '#a855f7']
-                    );
-                }
-            }, 100);
+            // Random spawn position
+            const x = Utils.random(100, this.width - 100);
+            const y = Utils.random(100, this.height - 150);
+            
+            const dummy = new Dummy(
+                x, y,
+                profile.username,
+                profile.displayName,
+                profile.avatarUrl
+            );
+            
+            this.dummies.push(dummy);
+            
+            this.setSpawnStatus(`Spawned ${profile.displayName}!`, 'success');
+            document.getElementById('username-input').value = '';
+            
+            // Update UI
+            this.emptyState.classList.add('hidden');
+            this.updateStats();
+            
+            // Close panel after short delay
+            setTimeout(() => this.closeSpawnPanel(), 800);
             
         } catch (error) {
-            console.error('Failed to add profile:', error);
-            UIRenderer.setStatus(error.message || 'Failed to fetch profile', 'error');
+            console.error('Spawn error:', error);
+            this.setSpawnStatus(error.message || 'Failed to load profile', 'error');
         } finally {
-            UIRenderer.setLoading(false);
-            UIRenderer.elements.input.focus();
+            confirmBtn.disabled = false;
+            confirmBtn.innerHTML = '<span class="btn-icon">✓</span><span class="btn-text">Spawn</span>';
         }
     }
-};
+    
+    resetAll() {
+        // Respawn all destroyed dummies
+        this.dummies.forEach(dummy => {
+            if (dummy.isDestroyed) {
+                dummy.respawn(
+                    Utils.random(100, this.width - 100),
+                    Utils.random(100, this.height - 150)
+                );
+            }
+        });
+        
+        this.stats.destroyed = 0;
+        this.updateStats();
+    }
+    
+    updateStats() {
+        const alive = this.dummies.filter(d => !d.isDestroyed).length;
+        const destroyed = this.dummies.filter(d => d.isDestroyed).length;
+        
+        document.getElementById('stat-dummies').textContent = alive;
+        document.getElementById('stat-damage').textContent = Math.floor(this.stats.totalDamage);
+        document.getElementById('stat-destroyed').textContent = destroyed;
+        
+        // Show/hide empty state
+        this.emptyState.classList.toggle('hidden', this.dummies.length > 0);
+    }
+    
+    update() {
+        // Update particles
+        this.particles.update();
+        
+        // Update dummies
+        const arena = { width: this.width, height: this.height };
+        
+        this.dummies.forEach(dummy => {
+            const wasAlive = !dummy.isDestroyed;
+            dummy.update(arena, this.particles);
+            
+            // Check if just destroyed
+            if (wasAlive && dummy.isDestroyed) {
+                this.stats.destroyed++;
+                this.updateStats();
+            }
+        });
+    }
+    
+    render() {
+        // Clear canvas
+        this.ctx.clearRect(0, 0, this.width, this.height);
+        
+        // Render dummies
+        this.dummies.forEach(dummy => dummy.render(this.ctx));
+        
+        // Render particles
+        this.particles.render();
+    }
+    
+    gameLoop() {
+        this.update();
+        this.render();
+        requestAnimationFrame(() => this.gameLoop());
+    }
+}
 
-// ========================================
-// PUBLIC API
-// For external access and debugging
-// ========================================
-const RobloxArenaAPI = {
-    // Profile methods
-    getProfiles: () => ProfileStore.getAll(),
-    getProfile: (localId) => ProfileStore.get(localId),
-    addProfile: (username) => App.addProfile.call({ elements: UIRenderer.elements }, username),
-    removeProfile: (localId) => UIRenderer.handleRemove(localId),
-    
-    // Combat methods
-    attack: (localId, damage) => {
-        const profile = ProfileStore.get(localId);
-        if (profile && !profile.isDestroyed) {
-            ProfileStore.applyDamage(localId, damage);
-            UIRenderer.updateProfileCard(ProfileStore.get(localId));
-            return true;
-        }
-        return false;
-    },
-    
-    // Tool methods
-    registerTool: (tool) => {
-        ToolsRegistry.register(tool);
-        UIRenderer.renderTools();
-    },
-    selectTool: (id) => {
-        ToolsRegistry.select(id);
-        UIRenderer.updateToolSelection();
-    },
-    getTools: () => ToolsRegistry.getAll(),
-    getSelectedTool: () => ToolsRegistry.getSelected(),
-    
-    // Respawn methods
-    respawn: (localId) => CombatSystem.respawn(localId),
-    respawnAll: () => CombatSystem.respawnAll(),
-    
-    // Effect methods
-    createExplosion: (x, y, count, color) => ParticleSystem.createExplosion(x, y, count, color),
-    createSparks: (x, y, count, colors) => ParticleSystem.createSparks(x, y, count, colors),
-    createFire: (x, y, count) => ParticleSystem.createFire(x, y, count),
-    createSmoke: (x, y, count) => ParticleSystem.createSmoke(x, y, count),
-    createShockwave: (x, y) => ParticleSystem.createShockwave(x, y),
-    screenShake: (intensity) => ScreenEffects.shake(intensity),
-    screenFlash: (color) => ScreenEffects.flash(color),
-    
-    // Sound methods
-    playSound: (type) => SoundSystem.play(type),
-    toggleSound: () => SoundSystem.toggle(),
-    
-    // Stats
-    getStats: () => ({ ...ProfileStore.stats }),
-    
-    // Utility
-    clearCache: () => RobloxAPI.clearCache()
-};
+// ============================================
+// GLOBAL FUNCTION FOR LOADING PROFILES
+// ============================================
+async function loadRobloxProfile(username) {
+    return await RobloxAPI.loadProfile(username);
+}
 
-// ========================================
-// INITIALIZE APPLICATION
-// ========================================
+// ============================================
+// INITIALIZE GAME
+// ============================================
+let game;
 document.addEventListener('DOMContentLoaded', () => {
-    App.init();
+    game = new Game();
 });
 
-// Make API available globally
-window.RobloxArenaAPI = RobloxArenaAPI;
+// Export for external use
+window.loadRobloxProfile = loadRobloxProfile;
+window.Game = Game;

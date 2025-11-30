@@ -2,8 +2,7 @@
  * ============================================
  * ROBLOX DUMMY ARENA - PHYSICS GAME
  * ============================================
- * A "Kick the Buddy" style game with Roblox avatars
- * Features: Physics, Tools, Damage System, Sound Effects
+ * Fixed version with better rate limit handling
  * ============================================
  */
 
@@ -35,15 +34,26 @@ const CONFIG = {
     // Crack stages (percentage thresholds)
     crackStages: [80, 60, 40, 20, 5],
     
-    // API
-    corsProxy: 'https://corsproxy.io/?',
-    robloxAvatarAPI: 'https://thumbnails.roblox.com/v1/users/avatar-headshot',
-    robloxUserAPI: 'https://users.roblox.com/v1/usernames/users',
-    robloxUserInfoAPI: 'https://users.roblox.com/v1/users/',
+    // API Configuration - Multiple proxies for fallback
+    corsProxies: [
+        'https://corsproxy.io/?',
+        'https://api.allorigins.win/raw?url=',
+        'https://cors-anywhere.herokuapp.com/',
+        '' // Direct (may work in some cases)
+    ],
+    currentProxyIndex: 0,
     
-    // Retry settings
-    maxRetries: 3,
-    retryDelay: 1000,
+    robloxEndpoints: {
+        usernames: 'https://users.roblox.com/v1/usernames/users',
+        userInfo: 'https://users.roblox.com/v1/users/',
+        avatar: 'https://thumbnails.roblox.com/v1/users/avatar-headshot'
+    },
+    
+    // Rate limit settings - IMPROVED
+    maxRetries: 5,
+    baseRetryDelay: 2000,      // Start with 2 seconds
+    maxRetryDelay: 30000,      // Max 30 seconds
+    requestCooldown: 1500,     // 1.5 seconds between requests
     
     // Sound
     soundEnabled: true
@@ -75,6 +85,17 @@ const Utils = {
     
     async sleep(ms) {
         return new Promise(resolve => setTimeout(resolve, ms));
+    },
+    
+    // Generate a simple hash for caching
+    hash(str) {
+        let hash = 0;
+        for (let i = 0; i < str.length; i++) {
+            const char = str.charCodeAt(i);
+            hash = ((hash << 5) - hash) + char;
+            hash = hash & hash;
+        }
+        return hash.toString(36);
     }
 };
 
@@ -295,7 +316,6 @@ class ParticleSystem {
                 gravity: 0.08
             });
         }
-        // Add shockwave ring
         this.add({
             x, y, vx: 0, vy: 0,
             size: 10, maxSize: 150,
@@ -340,8 +360,7 @@ class ParticleSystem {
         }
     }
     
-    createBreak(x, y, avatarUrl) {
-        // Debris particles
+    createBreak(x, y) {
         for (let i = 0; i < 30; i++) {
             const angle = Math.random() * Math.PI * 2;
             const speed = Utils.random(5, 15);
@@ -413,18 +432,427 @@ class ParticleSystem {
 }
 
 // ============================================
-// DUMMY CLASS (Physics Body with Roblox Avatar)
+// ROBLOX API SERVICE - IMPROVED
+// ============================================
+const RobloxAPI = {
+    // Persistent cache
+    cache: new Map(),
+    
+    // Request queue for rate limiting
+    requestQueue: [],
+    isProcessingQueue: false,
+    lastRequestTime: 0,
+    
+    // Track failed proxies
+    failedProxies: new Set(),
+    
+    /**
+     * Get a working CORS proxy URL
+     */
+    getProxyUrl() {
+        // Try proxies in order, skip failed ones
+        for (let i = 0; i < CONFIG.corsProxies.length; i++) {
+            const proxy = CONFIG.corsProxies[i];
+            if (!this.failedProxies.has(proxy)) {
+                return proxy;
+            }
+        }
+        // If all failed, reset and try first one
+        this.failedProxies.clear();
+        return CONFIG.corsProxies[0];
+    },
+    
+    /**
+     * Build URL with CORS proxy
+     */
+    buildUrl(url) {
+        const proxy = this.getProxyUrl();
+        if (!proxy) return url;
+        
+        // Different proxies need different URL formats
+        if (proxy.includes('allorigins')) {
+            return proxy + encodeURIComponent(url);
+        }
+        return proxy + encodeURIComponent(url);
+    },
+    
+    /**
+     * Add request to queue and process
+     */
+    async queueRequest(requestFn, priority = false) {
+        return new Promise((resolve, reject) => {
+            const request = { fn: requestFn, resolve, reject };
+            
+            if (priority) {
+                this.requestQueue.unshift(request);
+            } else {
+                this.requestQueue.push(request);
+            }
+            
+            this.processQueue();
+        });
+    },
+    
+    /**
+     * Process queued requests with rate limiting
+     */
+    async processQueue() {
+        if (this.isProcessingQueue || this.requestQueue.length === 0) return;
+        
+        this.isProcessingQueue = true;
+        
+        while (this.requestQueue.length > 0) {
+            const request = this.requestQueue.shift();
+            
+            // Ensure minimum time between requests
+            const timeSinceLastRequest = Date.now() - this.lastRequestTime;
+            if (timeSinceLastRequest < CONFIG.requestCooldown) {
+                await Utils.sleep(CONFIG.requestCooldown - timeSinceLastRequest);
+            }
+            
+            try {
+                this.lastRequestTime = Date.now();
+                const result = await request.fn();
+                request.resolve(result);
+            } catch (error) {
+                request.reject(error);
+            }
+            
+            // Small delay between requests
+            await Utils.sleep(300);
+        }
+        
+        this.isProcessingQueue = false;
+    },
+    
+    /**
+     * Fetch with retry logic and proxy fallback
+     */
+    async fetchWithRetry(url, options = {}, retryCount = 0) {
+        const proxyUrl = this.buildUrl(url);
+        
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout
+            
+            const response = await fetch(proxyUrl, {
+                ...options,
+                signal: controller.signal
+            });
+            
+            clearTimeout(timeoutId);
+            
+            // Handle rate limiting (429)
+            if (response.status === 429) {
+                if (retryCount < CONFIG.maxRetries) {
+                    // Calculate exponential backoff delay
+                    const delay = Math.min(
+                        CONFIG.baseRetryDelay * Math.pow(2, retryCount),
+                        CONFIG.maxRetryDelay
+                    );
+                    
+                    console.warn(`Rate limited (429). Waiting ${delay/1000}s before retry ${retryCount + 1}/${CONFIG.maxRetries}`);
+                    
+                    // Update UI with countdown
+                    this.showRetryCountdown(delay, retryCount + 1);
+                    
+                    await Utils.sleep(delay);
+                    return this.fetchWithRetry(url, options, retryCount + 1);
+                }
+                
+                // Try different proxy
+                const currentProxy = this.getProxyUrl();
+                this.failedProxies.add(currentProxy);
+                
+                if (this.failedProxies.size < CONFIG.corsProxies.length) {
+                    console.warn('Trying different proxy...');
+                    return this.fetchWithRetry(url, options, 0);
+                }
+                
+                throw new Error('Rate limited. Please wait a minute and try again.');
+            }
+            
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            
+            return response;
+            
+        } catch (error) {
+            // Handle network errors
+            if (error.name === 'AbortError') {
+                console.warn('Request timed out');
+            }
+            
+            if (retryCount < CONFIG.maxRetries) {
+                const delay = CONFIG.baseRetryDelay * Math.pow(1.5, retryCount);
+                console.warn(`Request failed. Retrying in ${delay/1000}s...`);
+                await Utils.sleep(delay);
+                return this.fetchWithRetry(url, options, retryCount + 1);
+            }
+            
+            // Try different proxy on failure
+            const currentProxy = this.getProxyUrl();
+            if (currentProxy) {
+                this.failedProxies.add(currentProxy);
+                
+                if (this.failedProxies.size < CONFIG.corsProxies.length) {
+                    console.warn('Trying different proxy after error...');
+                    return this.fetchWithRetry(url, options, 0);
+                }
+            }
+            
+            throw error;
+        }
+    },
+    
+    /**
+     * Show retry countdown in status
+     */
+    showRetryCountdown(delay, attempt) {
+        const statusEl = document.getElementById('panel-status');
+        if (!statusEl) return;
+        
+        let remaining = Math.ceil(delay / 1000);
+        
+        const updateCountdown = () => {
+            if (remaining > 0) {
+                statusEl.textContent = `Rate limited. Retrying in ${remaining}s... (Attempt ${attempt}/${CONFIG.maxRetries})`;
+                statusEl.className = 'panel-status loading';
+                remaining--;
+                setTimeout(updateCountdown, 1000);
+            }
+        };
+        
+        updateCountdown();
+    },
+    
+    /**
+     * Get User ID from username
+     */
+    async getUserId(username) {
+        const cacheKey = `userId_${username.toLowerCase()}`;
+        
+        // Check cache first
+        if (this.cache.has(cacheKey)) {
+            console.log(`Cache hit for userId: ${username}`);
+            return this.cache.get(cacheKey);
+        }
+        
+        return this.queueRequest(async () => {
+            const response = await this.fetchWithRetry(
+                CONFIG.robloxEndpoints.usernames,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        usernames: [username], 
+                        excludeBannedUsers: false 
+                    })
+                }
+            );
+            
+            const data = await response.json();
+            
+            if (data.data && data.data.length > 0) {
+                const userId = data.data[0].id;
+                this.cache.set(cacheKey, userId);
+                this.saveCache(); // Persist cache
+                return userId;
+            }
+            
+            return null;
+        });
+    },
+    
+    /**
+     * Get user info
+     */
+    async getUserInfo(userId) {
+        const cacheKey = `userInfo_${userId}`;
+        
+        if (this.cache.has(cacheKey)) {
+            console.log(`Cache hit for userInfo: ${userId}`);
+            return this.cache.get(cacheKey);
+        }
+        
+        return this.queueRequest(async () => {
+            const response = await this.fetchWithRetry(
+                `${CONFIG.robloxEndpoints.userInfo}${userId}`
+            );
+            
+            const data = await response.json();
+            this.cache.set(cacheKey, data);
+            this.saveCache();
+            return data;
+        });
+    },
+    
+    /**
+     * Get avatar URL
+     */
+    async getAvatarUrl(userId) {
+        const cacheKey = `avatar_${userId}`;
+        
+        if (this.cache.has(cacheKey)) {
+            console.log(`Cache hit for avatar: ${userId}`);
+            return this.cache.get(cacheKey);
+        }
+        
+        return this.queueRequest(async () => {
+            const params = new URLSearchParams({
+                userIds: userId,
+                size: '420x420',
+                format: 'Png'
+            });
+            
+            const response = await this.fetchWithRetry(
+                `${CONFIG.robloxEndpoints.avatar}?${params}`
+            );
+            
+            const data = await response.json();
+            
+            if (data.data && data.data.length > 0) {
+                const avatarUrl = data.data[0].imageUrl;
+                this.cache.set(cacheKey, avatarUrl);
+                this.saveCache();
+                return avatarUrl;
+            }
+            
+            return null;
+        });
+    },
+    
+    /**
+     * Load complete profile
+     */
+    async loadProfile(username) {
+        // Check for complete cached profile
+        const fullCacheKey = `profile_${username.toLowerCase()}`;
+        if (this.cache.has(fullCacheKey)) {
+            console.log(`Using cached profile for: ${username}`);
+            return this.cache.get(fullCacheKey);
+        }
+        
+        try {
+            // Step 1: Get User ID
+            const userId = await this.getUserId(username);
+            
+            if (!userId) {
+                throw new Error(`User "${username}" not found`);
+            }
+            
+            // Step 2: Get user info
+            const userInfo = await this.getUserInfo(userId);
+            
+            // Step 3: Get avatar (with delay to avoid rate limit)
+            await Utils.sleep(500);
+            const avatarUrl = await this.getAvatarUrl(userId);
+            
+            const profile = {
+                id: userId,
+                username: userInfo.name,
+                displayName: userInfo.displayName,
+                avatarUrl: avatarUrl || this.getDefaultAvatar()
+            };
+            
+            // Cache the complete profile
+            this.cache.set(fullCacheKey, profile);
+            this.saveCache();
+            
+            return profile;
+            
+        } catch (error) {
+            console.error('Profile load error:', error);
+            
+            // Return demo profile on failure
+            if (error.message.includes('Rate limited') || error.message.includes('429')) {
+                console.warn('Using demo profile due to rate limiting');
+                return this.getDemoProfile(username);
+            }
+            
+            throw error;
+        }
+    },
+    
+    /**
+     * Get default avatar URL
+     */
+    getDefaultAvatar() {
+        // Return a simple colored placeholder
+        return null;
+    },
+    
+    /**
+     * Get demo profile when API fails
+     */
+    getDemoProfile(username) {
+        return {
+            id: Math.floor(Math.random() * 1000000),
+            username: username,
+            displayName: username,
+            avatarUrl: null, // Will show placeholder
+            isDemo: true
+        };
+    },
+    
+    /**
+     * Save cache to localStorage
+     */
+    saveCache() {
+        try {
+            const cacheObj = {};
+            this.cache.forEach((value, key) => {
+                cacheObj[key] = value;
+            });
+            localStorage.setItem('roblox_api_cache', JSON.stringify(cacheObj));
+        } catch (e) {
+            console.warn('Could not save cache:', e);
+        }
+    },
+    
+    /**
+     * Load cache from localStorage
+     */
+    loadCache() {
+        try {
+            const stored = localStorage.getItem('roblox_api_cache');
+            if (stored) {
+                const cacheObj = JSON.parse(stored);
+                Object.entries(cacheObj).forEach(([key, value]) => {
+                    this.cache.set(key, value);
+                });
+                console.log(`Loaded ${this.cache.size} cached items`);
+            }
+        } catch (e) {
+            console.warn('Could not load cache:', e);
+        }
+    },
+    
+    /**
+     * Clear cache
+     */
+    clearCache() {
+        this.cache.clear();
+        localStorage.removeItem('roblox_api_cache');
+        this.failedProxies.clear();
+    }
+};
+
+// Load cache on startup
+RobloxAPI.loadCache();
+
+// ============================================
+// DUMMY CLASS
 // ============================================
 class Dummy {
     constructor(x, y, username, displayName, avatarUrl) {
-        // Identity
         this.username = username;
         this.displayName = displayName;
         this.avatarUrl = avatarUrl;
         this.avatarLoaded = false;
         this.avatarImage = null;
         
-        // Position & Physics
         this.x = x;
         this.y = y;
         this.vx = 0;
@@ -433,7 +861,6 @@ class Dummy {
         this.rotation = 0;
         this.angularVel = 0;
         
-        // State
         this.hp = CONFIG.dummyMaxHP;
         this.maxHP = CONFIG.dummyMaxHP;
         this.isDestroyed = false;
@@ -443,12 +870,10 @@ class Dummy {
         this.dotActive = false;
         this.dotTimer = 0;
         
-        // Visual
         this.crackStage = 0;
         this.flashTimer = 0;
         this.flashColor = null;
         
-        // Load avatar
         this.loadAvatar();
     }
     
@@ -459,6 +884,10 @@ class Dummy {
         this.avatarImage.crossOrigin = 'anonymous';
         this.avatarImage.onload = () => {
             this.avatarLoaded = true;
+        };
+        this.avatarImage.onerror = () => {
+            console.warn('Failed to load avatar image');
+            this.avatarUrl = null;
         };
         this.avatarImage.src = this.avatarUrl;
     }
@@ -483,11 +912,9 @@ class Dummy {
         const actualDamage = Math.min(amount, this.hp);
         this.hp -= actualDamage;
         
-        // Flash effect
         this.flashTimer = 10;
         this.flashColor = flashColor;
         
-        // Check crack stage
         const oldStage = this.crackStage;
         for (let i = 0; i < CONFIG.crackStages.length; i++) {
             if (this.hpPercent <= CONFIG.crackStages[i]) {
@@ -495,16 +922,14 @@ class Dummy {
             }
         }
         
-        // Play crack sound if stage increased
         if (this.crackStage > oldStage) {
             SoundSystem.play('crack');
         }
         
-        // Check destruction
         if (this.hp <= 0) {
             this.hp = 0;
             this.isDestroyed = true;
-            particles.createBreak(this.x, this.y, this.avatarUrl);
+            particles.createBreak(this.x, this.y);
             SoundSystem.play('break');
         }
         
@@ -514,7 +939,6 @@ class Dummy {
     update(arena, particles) {
         if (this.isDestroyed) return;
         
-        // Freeze countdown
         if (this.isFrozen) {
             this.freezeTimer--;
             if (this.freezeTimer <= 0) {
@@ -522,10 +946,9 @@ class Dummy {
             }
         }
         
-        // DOT damage
         if (this.dotActive) {
             this.dotTimer--;
-            if (this.dotTimer % 30 === 0) { // Tick every 30 frames
+            if (this.dotTimer % 30 === 0) {
                 this.applyDamage(15, particles, 'orange');
                 particles.createFire(this.x, this.y - this.radius);
             }
@@ -534,32 +957,24 @@ class Dummy {
             }
         }
         
-        // Skip physics if dragging or frozen
         if (this.isDragging || this.isFrozen) {
             this.vx = 0;
             this.vy = 0;
             return;
         }
         
-        // Apply gravity
         this.vy += CONFIG.gravity;
-        
-        // Apply friction/air resistance
         this.vx *= CONFIG.airResistance;
         this.vy *= CONFIG.airResistance;
         
-        // Update position
         this.x += this.vx;
         this.y += this.vy;
         
-        // Angular velocity
         this.rotation += this.angularVel;
         this.angularVel *= 0.95;
         
-        // Wall collisions
         this.handleWallCollisions(arena, particles);
         
-        // Flash timer
         if (this.flashTimer > 0) {
             this.flashTimer--;
         }
@@ -570,7 +985,6 @@ class Dummy {
         let impacted = false;
         let impactSpeed = 0;
         
-        // Left wall
         if (this.x - this.radius < 0) {
             this.x = this.radius;
             impactSpeed = Math.abs(this.vx);
@@ -579,7 +993,6 @@ class Dummy {
             impacted = true;
         }
         
-        // Right wall
         if (this.x + this.radius > width) {
             this.x = width - this.radius;
             impactSpeed = Math.abs(this.vx);
@@ -588,7 +1001,6 @@ class Dummy {
             impacted = true;
         }
         
-        // Top wall
         if (this.y - this.radius < 0) {
             this.y = this.radius;
             impactSpeed = Math.abs(this.vy);
@@ -596,7 +1008,6 @@ class Dummy {
             impacted = true;
         }
         
-        // Bottom wall (floor)
         if (this.y + this.radius > height) {
             this.y = height - this.radius;
             impactSpeed = Math.abs(this.vy);
@@ -606,7 +1017,6 @@ class Dummy {
             impacted = true;
         }
         
-        // Impact damage
         if (impacted && impactSpeed > CONFIG.minImpactSpeed) {
             const intensity = Math.min(impactSpeed / 20, 1);
             const damage = Math.min(
@@ -631,20 +1041,17 @@ class Dummy {
         ctx.translate(this.x, this.y);
         ctx.rotate(this.rotation * Math.PI / 180);
         
-        // Flash effect
         if (this.flashTimer > 0) {
             ctx.shadowBlur = 30;
             ctx.shadowColor = this.flashColor === 'red' ? '#ff3333' : 
                               this.flashColor === 'blue' ? '#3399ff' : '#ff9933';
         }
         
-        // Avatar circle
         ctx.beginPath();
         ctx.arc(0, 0, this.radius, 0, Math.PI * 2);
         ctx.closePath();
         ctx.clip();
         
-        // Draw avatar or placeholder
         if (this.avatarLoaded && this.avatarImage) {
             ctx.drawImage(
                 this.avatarImage,
@@ -652,35 +1059,33 @@ class Dummy {
                 this.radius * 2, this.radius * 2
             );
         } else {
-            // Placeholder gradient
+            // Colorful placeholder
+            const hue = (this.username.charCodeAt(0) * 10) % 360;
             const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, this.radius);
-            grad.addColorStop(0, '#4a4a6a');
-            grad.addColorStop(1, '#2a2a4a');
+            grad.addColorStop(0, `hsl(${hue}, 60%, 50%)`);
+            grad.addColorStop(1, `hsl(${hue}, 60%, 30%)`);
             ctx.fillStyle = grad;
             ctx.fill();
             
-            // Loading text
-            ctx.fillStyle = '#888';
-            ctx.font = 'bold 14px sans-serif';
+            // First letter
+            ctx.fillStyle = '#fff';
+            ctx.font = `bold ${this.radius * 0.8}px sans-serif`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillText('Loading...', 0, 0);
+            ctx.fillText(this.username.charAt(0).toUpperCase(), 0, 0);
         }
         
-        // Crack overlay
         if (this.crackStage > 0) {
             ctx.globalAlpha = 0.3 + this.crackStage * 0.12;
             this.drawCracks(ctx, this.crackStage);
         }
         
-        // Freeze overlay
         if (this.isFrozen) {
             ctx.globalAlpha = 0.5;
             ctx.fillStyle = 'rgba(150, 220, 255, 0.5)';
             ctx.fill();
         }
         
-        // DOT overlay
         if (this.dotActive) {
             ctx.globalAlpha = 0.3 + Math.sin(Date.now() / 100) * 0.1;
             ctx.fillStyle = 'rgba(255, 100, 50, 0.4)';
@@ -689,10 +1094,7 @@ class Dummy {
         
         ctx.restore();
         
-        // Draw HP bar
         this.drawHPBar(ctx);
-        
-        // Draw username
         this.drawUsername(ctx);
     }
     
@@ -700,7 +1102,6 @@ class Dummy {
         ctx.strokeStyle = 'rgba(0, 0, 0, 0.7)';
         ctx.lineWidth = 2;
         
-        // Generate crack patterns based on stage
         const patterns = [
             [[0, -30], [10, 0], [-5, 25]],
             [[-25, -15], [0, 10], [20, -5]],
@@ -726,23 +1127,20 @@ class Dummy {
         const barX = this.x - this.radius;
         const barY = this.y - this.radius - 15;
         
-        // Background
         ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
         ctx.beginPath();
         ctx.roundRect(barX, barY, barWidth, barHeight, 4);
         ctx.fill();
         
-        // HP fill
         const hpWidth = (this.hp / this.maxHP) * (barWidth - 4);
         const hpColor = this.hpPercent > 50 ? '#22c55e' : 
                         this.hpPercent > 25 ? '#f59e0b' : '#ef4444';
         
         ctx.fillStyle = hpColor;
         ctx.beginPath();
-        ctx.roundRect(barX + 2, barY + 2, hpWidth, barHeight - 4, 2);
+        ctx.roundRect(barX + 2, barY + 2, Math.max(0, hpWidth), barHeight - 4, 2);
         ctx.fill();
         
-        // HP text
         ctx.fillStyle = '#fff';
         ctx.font = 'bold 8px sans-serif';
         ctx.textAlign = 'center';
@@ -765,14 +1163,14 @@ class Dummy {
         return Utils.distance(this.x, this.y, px, py) <= this.radius;
     }
     
-    freeze(duration = 180) { // 3 seconds at 60fps
+    freeze(duration = 180) {
         this.isFrozen = true;
         this.freezeTimer = duration;
         this.vx = 0;
         this.vy = 0;
     }
     
-    applyDOT(duration = 300) { // 5 seconds
+    applyDOT(duration = 300) {
         this.dotActive = true;
         this.dotTimer = duration;
     }
@@ -791,115 +1189,6 @@ class Dummy {
         this.angularVel = 0;
     }
 }
-
-// ============================================
-// ROBLOX API SERVICE
-// ============================================
-const RobloxAPI = {
-    cache: new Map(),
-    
-    buildUrl(url) {
-        return CONFIG.corsProxy + encodeURIComponent(url);
-    },
-    
-    async fetchWithRetry(url, options = {}, retries = 0) {
-        try {
-            const response = await fetch(url, options);
-            
-            if (response.status === 429) {
-                if (retries < CONFIG.maxRetries) {
-                    const delay = CONFIG.retryDelay * Math.pow(2, retries);
-                    console.warn(`Rate limited. Retrying in ${delay}ms...`);
-                    await Utils.sleep(delay);
-                    return this.fetchWithRetry(url, options, retries + 1);
-                }
-                throw new Error('Rate limited. Please try again later.');
-            }
-            
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}`);
-            }
-            
-            return response;
-        } catch (error) {
-            if (retries < CONFIG.maxRetries) {
-                await Utils.sleep(CONFIG.retryDelay);
-                return this.fetchWithRetry(url, options, retries + 1);
-            }
-            throw error;
-        }
-    },
-    
-    async getUserId(username) {
-        const cacheKey = `id_${username.toLowerCase()}`;
-        if (this.cache.has(cacheKey)) return this.cache.get(cacheKey);
-        
-        const url = this.buildUrl(CONFIG.robloxUserAPI);
-        const response = await this.fetchWithRetry(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ usernames: [username], excludeBannedUsers: false })
-        });
-        
-        const data = await response.json();
-        if (data.data && data.data.length > 0) {
-            const userId = data.data[0].id;
-            this.cache.set(cacheKey, userId);
-            return userId;
-        }
-        return null;
-    },
-    
-    async getUserInfo(userId) {
-        const cacheKey = `info_${userId}`;
-        if (this.cache.has(cacheKey)) return this.cache.get(cacheKey);
-        
-        const url = this.buildUrl(`${CONFIG.robloxUserInfoAPI}${userId}`);
-        const response = await this.fetchWithRetry(url);
-        const data = await response.json();
-        
-        this.cache.set(cacheKey, data);
-        return data;
-    },
-    
-    async getAvatarUrl(userId) {
-        const cacheKey = `avatar_${userId}`;
-        if (this.cache.has(cacheKey)) return this.cache.get(cacheKey);
-        
-        const params = new URLSearchParams({
-            userIds: userId,
-            size: '420x420',
-            format: 'Png'
-        });
-        
-        const url = this.buildUrl(`${CONFIG.robloxAvatarAPI}?${params}`);
-        const response = await this.fetchWithRetry(url);
-        const data = await response.json();
-        
-        if (data.data && data.data.length > 0) {
-            const avatarUrl = data.data[0].imageUrl;
-            this.cache.set(cacheKey, avatarUrl);
-            return avatarUrl;
-        }
-        return null;
-    },
-    
-    async loadProfile(username) {
-        const userId = await this.getUserId(username);
-        if (!userId) throw new Error(`User "${username}" not found`);
-        
-        const userInfo = await this.getUserInfo(userId);
-        await Utils.sleep(200);
-        const avatarUrl = await this.getAvatarUrl(userId);
-        
-        return {
-            id: userId,
-            username: userInfo.name,
-            displayName: userInfo.displayName,
-            avatarUrl
-        };
-    }
-};
 
 // ============================================
 // TOOLS DEFINITIONS
@@ -966,16 +1255,13 @@ const TOOLS = {
 // ============================================
 class Game {
     constructor() {
-        // DOM elements
         this.canvas = document.getElementById('game-canvas');
         this.ctx = this.canvas.getContext('2d');
         this.arena = document.getElementById('game-arena');
         this.emptyState = document.getElementById('arena-empty');
         
-        // Systems
         this.particles = new ParticleSystem(this.canvas, this.ctx);
         
-        // State
         this.dummies = [];
         this.currentTool = 'hand';
         this.isDragging = false;
@@ -987,13 +1273,11 @@ class Game {
         this.dragVelX = 0;
         this.dragVelY = 0;
         
-        // Stats
         this.stats = {
             totalDamage: 0,
             destroyed: 0
         };
         
-        // Initialize
         this.init();
     }
     
@@ -1002,7 +1286,6 @@ class Game {
         this.bindEvents();
         this.gameLoop();
         
-        // Initialize sound on first interaction
         document.addEventListener('click', () => SoundSystem.init(), { once: true });
         document.addEventListener('touchstart', () => SoundSystem.init(), { once: true });
     }
@@ -1021,19 +1304,16 @@ class Game {
     }
     
     bindEvents() {
-        // Mouse events
         this.canvas.addEventListener('mousedown', (e) => this.onPointerDown(e));
         this.canvas.addEventListener('mousemove', (e) => this.onPointerMove(e));
         this.canvas.addEventListener('mouseup', (e) => this.onPointerUp(e));
         this.canvas.addEventListener('mouseleave', (e) => this.onPointerUp(e));
         
-        // Touch events
         this.canvas.addEventListener('touchstart', (e) => this.onPointerDown(e), { passive: false });
         this.canvas.addEventListener('touchmove', (e) => this.onPointerMove(e), { passive: false });
         this.canvas.addEventListener('touchend', (e) => this.onPointerUp(e));
         this.canvas.addEventListener('touchcancel', (e) => this.onPointerUp(e));
         
-        // Tool selection
         document.querySelectorAll('.tool-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 this.selectTool(btn.dataset.tool);
@@ -1041,7 +1321,6 @@ class Game {
             });
         });
         
-        // Header buttons
         document.getElementById('spawn-btn').addEventListener('click', () => {
             this.openSpawnPanel();
             SoundSystem.play('ui');
@@ -1058,7 +1337,6 @@ class Game {
             SoundSystem.play('ui');
         });
         
-        // Spawn panel
         document.getElementById('panel-overlay').addEventListener('click', () => this.closeSpawnPanel());
         document.getElementById('panel-close').addEventListener('click', () => this.closeSpawnPanel());
         document.getElementById('spawn-confirm').addEventListener('click', () => this.spawnFromInput());
@@ -1068,7 +1346,6 @@ class Game {
             if (e.key === 'Enter') this.spawnFromInput();
         });
         
-        // Preset buttons
         document.querySelectorAll('.preset-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 document.getElementById('username-input').value = btn.dataset.username;
@@ -1101,13 +1378,9 @@ class Game {
     onPointerDown(e) {
         e.preventDefault();
         const pos = this.getPointerPos(e);
-        const tool = TOOLS[this.currentTool];
-        
-        // Find dummy under pointer
         const dummy = this.findDummyAt(pos.x, pos.y);
         
         if (this.currentTool === 'hand' && dummy) {
-            // Start dragging
             this.isDragging = true;
             this.dragTarget = dummy;
             this.dragOffsetX = pos.x - dummy.x;
@@ -1119,10 +1392,8 @@ class Game {
             dummy.isDragging = true;
             SoundSystem.play('tap');
         } else if (dummy) {
-            // Apply tool effect
             this.applyTool(pos.x, pos.y, dummy);
         } else if (this.currentTool === 'explosion') {
-            // Explosion can hit area
             this.applyExplosion(pos.x, pos.y);
         }
     }
@@ -1133,13 +1404,11 @@ class Game {
         if (this.isDragging && this.dragTarget) {
             const pos = this.getPointerPos(e);
             
-            // Calculate velocity for throw
             this.dragVelX = pos.x - this.lastDragX;
             this.dragVelY = pos.y - this.lastDragY;
             this.lastDragX = pos.x;
             this.lastDragY = pos.y;
             
-            // Move dummy with constraints
             this.dragTarget.x = Utils.clamp(
                 pos.x - this.dragOffsetX,
                 this.dragTarget.radius,
@@ -1155,7 +1424,6 @@ class Game {
     
     onPointerUp(e) {
         if (this.isDragging && this.dragTarget) {
-            // Apply throw velocity
             const speed = Math.sqrt(this.dragVelX ** 2 + this.dragVelY ** 2);
             const throwSpeed = Math.min(speed * CONFIG.throwMultiplier, CONFIG.maxThrowSpeed);
             
@@ -1249,7 +1517,6 @@ class Game {
                 const damage = Math.floor(tool.damage * intensity);
                 totalDamage += dummy.applyDamage(damage, this.particles);
                 
-                // Apply force away from explosion
                 const angle = Math.atan2(dummy.y - y, dummy.x - x);
                 const force = tool.force * intensity;
                 dummy.applyForce(
@@ -1283,14 +1550,13 @@ class Game {
         const flash = document.getElementById(`flash-${color}`);
         if (!flash) return;
         
-        // Set flash position
         const xPercent = (x / this.width) * 100;
         const yPercent = (y / this.height) * 100;
         flash.style.setProperty('--flash-x', `${xPercent}%`);
         flash.style.setProperty('--flash-y', `${yPercent}%`);
         
         flash.classList.remove('active');
-        void flash.offsetWidth; // Force reflow
+        void flash.offsetWidth;
         flash.classList.add('active');
         
         setTimeout(() => flash.classList.remove('active'), 250);
@@ -1337,7 +1603,7 @@ class Game {
     }
     
     async spawnRandom() {
-        const names = ['Roblox', 'Builderman', 'ROBLOX', 'John', 'Jane'];
+        const names = ['Roblox', 'Builderman', 'ROBLOX', 'John', 'Jane', 'David', 'Guest'];
         const name = names[Math.floor(Math.random() * names.length)];
         await this.spawnDummy(name);
     }
@@ -1352,7 +1618,6 @@ class Game {
         try {
             const profile = await RobloxAPI.loadProfile(username);
             
-            // Random spawn position
             const x = Utils.random(100, this.width - 100);
             const y = Utils.random(100, this.height - 150);
             
@@ -1365,14 +1630,16 @@ class Game {
             
             this.dummies.push(dummy);
             
-            this.setSpawnStatus(`Spawned ${profile.displayName}!`, 'success');
+            const statusMsg = profile.isDemo 
+                ? `Spawned ${profile.displayName} (demo mode)`
+                : `Spawned ${profile.displayName}!`;
+            
+            this.setSpawnStatus(statusMsg, 'success');
             document.getElementById('username-input').value = '';
             
-            // Update UI
             this.emptyState.classList.add('hidden');
             this.updateStats();
             
-            // Close panel after short delay
             setTimeout(() => this.closeSpawnPanel(), 800);
             
         } catch (error) {
@@ -1385,7 +1652,6 @@ class Game {
     }
     
     resetAll() {
-        // Respawn all destroyed dummies
         this.dummies.forEach(dummy => {
             if (dummy.isDestroyed) {
                 dummy.respawn(
@@ -1407,22 +1673,18 @@ class Game {
         document.getElementById('stat-damage').textContent = Math.floor(this.stats.totalDamage);
         document.getElementById('stat-destroyed').textContent = destroyed;
         
-        // Show/hide empty state
         this.emptyState.classList.toggle('hidden', this.dummies.length > 0);
     }
     
     update() {
-        // Update particles
         this.particles.update();
         
-        // Update dummies
         const arena = { width: this.width, height: this.height };
         
         this.dummies.forEach(dummy => {
             const wasAlive = !dummy.isDestroyed;
             dummy.update(arena, this.particles);
             
-            // Check if just destroyed
             if (wasAlive && dummy.isDestroyed) {
                 this.stats.destroyed++;
                 this.updateStats();
@@ -1431,13 +1693,8 @@ class Game {
     }
     
     render() {
-        // Clear canvas
         this.ctx.clearRect(0, 0, this.width, this.height);
-        
-        // Render dummies
         this.dummies.forEach(dummy => dummy.render(this.ctx));
-        
-        // Render particles
         this.particles.render();
     }
     
@@ -1449,20 +1706,20 @@ class Game {
 }
 
 // ============================================
-// GLOBAL FUNCTION FOR LOADING PROFILES
+// GLOBAL FUNCTIONS
 // ============================================
 async function loadRobloxProfile(username) {
     return await RobloxAPI.loadProfile(username);
 }
 
 // ============================================
-// INITIALIZE GAME
+// INITIALIZE
 // ============================================
 let game;
 document.addEventListener('DOMContentLoaded', () => {
     game = new Game();
 });
 
-// Export for external use
 window.loadRobloxProfile = loadRobloxProfile;
 window.Game = Game;
+window.RobloxAPI = RobloxAPI;

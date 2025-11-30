@@ -3,65 +3,136 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Roblox Profile Spawner - Combat System</title>
+    <title>Roblox Dummy Arena - Ultimate Combat</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <div class="app-container">
-        <!-- Header / Input Section -->
-        <header class="input-section">
-            <h1>Roblox Dummy Arena</h1>
-            <div class="input-wrapper">
-                <input 
-                    type="text" 
-                    id="username-input" 
-                    placeholder="Enter Roblox username..."
-                    autocomplete="off"
-                >
-                <button id="add-profile-btn">Add Dummy</button>
+    <div class="app-wrapper">
+        <!-- ================================
+             Sidebar Tool Menu
+        ================================= -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <h2 class="sidebar-title">⚔️ Arsenal</h2>
+                <button class="sidebar-toggle" id="sidebar-toggle">◀</button>
             </div>
-            <p id="status-message" class="status-message"></p>
-        </header>
-
-        <!-- Tools Section -->
-        <section class="tools-section">
-            <h2 class="tools-title">⚔️ Combat Tools</h2>
-            <div class="tools-container" id="tools-container">
+            
+            <div class="tools-list" id="tools-list">
                 <!-- Tools will be rendered here -->
             </div>
-            <div class="tool-info">
-                <span id="current-tool-name">No tool selected</span>
-                <span id="current-tool-damage"></span>
+            
+            <div class="sidebar-footer">
+                <div class="selected-tool-display" id="selected-tool-display">
+                    <span class="selected-icon">👊</span>
+                    <div class="selected-info">
+                        <span class="selected-name">Punch</span>
+                        <span class="selected-damage">10 DMG</span>
+                    </div>
+                </div>
             </div>
-        </section>
+        </aside>
 
-        <!-- Stats Bar -->
-        <div class="stats-bar">
-            <div class="stats-left">
-                <span id="profile-count">Dummies: 0</span>
-                <span id="destroyed-count">Destroyed: 0</span>
-                <span id="total-damage">Total Damage: 0</span>
-            </div>
-            <div class="stats-right">
-                <button id="respawn-all-btn" class="action-btn respawn-btn">Respawn All</button>
-                <button id="clear-all-btn" class="action-btn clear-btn">Clear All</button>
-            </div>
-        </div>
+        <!-- ================================
+             Main Content Area
+        ================================= -->
+        <main class="main-content">
+            <!-- Header / Input Section -->
+            <header class="input-section">
+                <h1 class="main-title">
+                    <span class="title-icon">🎯</span>
+                    Roblox Dummy Arena
+                    <span class="title-icon">🎯</span>
+                </h1>
+                <p class="subtitle">Spawn targets • Choose weapons • Unleash destruction</p>
+                
+                <div class="input-wrapper">
+                    <div class="input-container">
+                        <span class="input-icon">🔍</span>
+                        <input 
+                            type="text" 
+                            id="username-input" 
+                            placeholder="Enter Roblox username..."
+                            autocomplete="off"
+                        >
+                        <button id="add-profile-btn" class="add-btn">
+                            <span class="btn-text">Add Dummy</span>
+                            <span class="btn-icon">+</span>
+                        </button>
+                    </div>
+                </div>
+                
+                <p id="status-message" class="status-message"></p>
+            </header>
 
-        <!-- Profile Grid Container -->
-        <main id="profiles-container" class="profiles-container">
-            <!-- Profiles will be spawned here -->
+            <!-- Stats Bar -->
+            <div class="stats-bar">
+                <div class="stat-item">
+                    <span class="stat-icon">👥</span>
+                    <span class="stat-label">Dummies</span>
+                    <span class="stat-value" id="profile-count">0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-icon">💀</span>
+                    <span class="stat-label">Destroyed</span>
+                    <span class="stat-value" id="destroyed-count">0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-icon">💥</span>
+                    <span class="stat-label">Total Damage</span>
+                    <span class="stat-value" id="total-damage">0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-icon">🎯</span>
+                    <span class="stat-label">Hits</span>
+                    <span class="stat-value" id="total-hits">0</span>
+                </div>
+                
+                <div class="stat-actions">
+                    <button id="respawn-all-btn" class="action-btn respawn-btn">
+                        <span>↻</span> Respawn All
+                    </button>
+                    <button id="clear-all-btn" class="action-btn clear-btn">
+                        <span>✕</span> Clear All
+                    </button>
+                </div>
+            </div>
+
+            <!-- Profile Grid Container -->
+            <section id="profiles-container" class="profiles-container">
+                <!-- Profiles will be spawned here -->
+            </section>
         </main>
     </div>
 
+    <!-- ================================
+         Global Overlays & Effects
+    ================================= -->
+    
+    <!-- Screen Flash Effect -->
+    <div class="screen-flash" id="screen-flash"></div>
+    
+    <!-- Screen Shake Container -->
+    <div class="screen-shake-wrapper" id="screen-shake-wrapper"></div>
+    
+    <!-- Electric Flicker Overlay -->
+    <div class="electric-overlay" id="electric-overlay"></div>
+    
+    <!-- Heat Distortion Overlay -->
+    <div class="heat-overlay" id="heat-overlay"></div>
+    
+    <!-- Particle Canvas -->
+    <canvas id="particle-canvas"></canvas>
+    
     <!-- Sound Toggle -->
     <button id="sound-toggle" class="sound-toggle" title="Toggle Sound">
         🔊
     </button>
 
-    <!-- Particle Canvas (for global effects) -->
-    <canvas id="particle-canvas"></canvas>
+    <!-- Mobile Tool Toggle -->
+    <button id="mobile-tool-toggle" class="mobile-tool-toggle">
+        ⚔️
+    </button>
 
-    <script type="module" src="script.js"></script>
+    <script src="script.js"></script>
 </body>
 </html>
